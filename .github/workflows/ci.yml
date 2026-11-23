@@ -1,0 +1,129 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Test core
+        run: cargo test --locked -p circadian-core
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Build release
+        run: cargo build --locked --release -p circadian-app -p circadian-daemon
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = Get-ChildItem -Path $candidates -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) {
+            $command = Get-Command iscc.exe -ErrorAction SilentlyContinue
+            if (-not $command) { throw "ISCC.exe not found" }
+            $iscc = Get-Item $command.Source
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "ISCC=$($iscc.FullName)"
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $meta = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($meta.packages | Where-Object { $_.name -eq "circadian-app" }).version
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $tag = $env:GITHUB_REF_NAME.Substring(1)
+            if ($tag -ne $version) {
+              throw "Tag $tag does not match Cargo version $version"
+            }
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "APP_VERSION=$version"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & $env:ISCC "/DAppVersion=$env:APP_VERSION" "installer\circadian.iss"
+
+      - name: Package portable
+        shell: pwsh
+        run: |
+          $portable = Join-Path $env:RUNNER_TEMP "circadian-portable"
+          New-Item -ItemType Directory -Force -Path "$portable\assets", "$portable\licenses" | Out-Null
+          Copy-Item "target\release\circadian-app.exe" "$portable\circadian.exe"
+          Copy-Item "target\release\circadian-daemon.exe" "$portable\circadiand.exe"
+          Copy-Item "crates\daemon\assets\circadian.ico" "$portable\assets\circadian.ico"
+          Copy-Item "LICENSE" "$portable\LICENSE"
+          Copy-Item "README.md" "$portable\README.md"
+          Copy-Item "THIRD_PARTY_NOTICES.md" "$portable\THIRD_PARTY_NOTICES.md"
+          Copy-Item "licenses\*" "$portable\licenses\" -Recurse
+          tar.exe -a -c -f "dist\Circadian-$env:APP_VERSION-portable.zip" -C $portable .
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist -File | Where-Object { $_.Extension -in ".exe", ".zip" }
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -Encoding ascii "dist\SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: circadian-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: circadian-dist
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
