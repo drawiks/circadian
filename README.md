@@ -41,7 +41,7 @@ No wearable. No phone. No account. Everything stays on your computer.
 - **No wearable, no phone, no account.** Nothing to charge, wear, or sign into.
 - **A report you can read.** Weekly average, sleep debt, bedtime spread, longest and shortest nights, and a short list of facts.
 - **Built for real PC use.** Reboots, Windows updates, suspend, hibernation, and power loss are handled.
-- **Local by design.** SQLite in `%LOCALAPPDATA%\Circadian`. No network calls, no telemetry.
+- **Local by design.** SQLite in `%LOCALAPPDATA%\Circadian`. No telemetry. Update checks happen only when you ask.
 - **Native Windows UI.** English and Russian interface, dark and light themes, system tray, and start with Windows.
 
 ## How it works
@@ -72,9 +72,19 @@ There is also a portable ZIP: extract it somewhere permanent and run `circadian.
 
 Circadian needs Windows 10 version 1903 or newer. Windows 11 is supported.
 
+## Updates
+
+Installed builds check for updates from the version button in the sidebar. The installer is downloaded from GitHub, verified with a signed manifest and SHA-256, then installed over the current version. Settings and sleep history stay in `%LOCALAPPDATA%\Circadian`.
+
+Portable builds update manually: download the latest portable ZIP and replace the files.
+
+The update check contacts GitHub only when you press the button. There is no background update ping, no telemetry, and no sleep data is sent.
+
+Builds before 0.3.0 do not have the updater. Install 0.3.0 once manually; later versions update from inside the app.
+
 ## Privacy
 
-Sleep data is personal. Circadian does not create an account, does not send anything to a server, and does not include analytics. Your history is stored in a local SQLite database:
+Sleep data is personal. Circadian does not create an account and does not send sleep data anywhere. It contacts GitHub only when you check for updates or open a release link. There is no analytics. Your history is stored in a local SQLite database:
 
 ```text
 %LOCALAPPDATA%\Circadian\circadian.db
@@ -102,7 +112,7 @@ Reboots under 45 minutes are ignored, so a quick restart does not become a fake 
 
 **Does it send anything?**
 
-No. There is no account, cloud sync, update ping, or telemetry.
+No sleep data. There is no account, cloud sync, or telemetry. Circadian contacts GitHub only when you check for updates.
 
 **Is this a medical device?**
 
@@ -130,7 +140,7 @@ $iscc = Get-ChildItem `
   "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", `
   "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" `
   -ErrorAction SilentlyContinue | Select-Object -First 1
-& $iscc "/DAppVersion=0.2.0" "/DBinDir=..\target\release" "installer\circadian.iss"
+& $iscc "/DAppVersion=0.3.0" "/DBinDir=..\target\release" "installer\circadian.iss"
 ```
 
 </details>
