@@ -85,12 +85,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p circadian-app -p circadian-daemon
 ```
 
-Из WSL:
+Release-сборка и установщик делаются на Windows или в CI: GPUI компилирует
+HLSL-шейдеры на этапе сборки. Из WSL можно собрать только debug-превью:
 
 ```bash
 cargo install cargo-xwin
 rustup target add x86_64-pc-windows-msvc
-cargo xwin build --release --target x86_64-pc-windows-msvc -p circadian-app -p circadian-daemon
+cargo xwin build --target x86_64-pc-windows-msvc -p circadian-app -p circadian-daemon
 ```
 
 Установщик собирается Inno Setup 6:
@@ -101,7 +102,7 @@ $iscc = Get-ChildItem `
   "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", `
   "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" `
   -ErrorAction SilentlyContinue | Select-Object -First 1
-& $iscc "/DAppVersion=0.1.0" "/DBinDir=..\target\release" "installer\circadian.iss"
+& $iscc "/DAppVersion=0.1.1" "/DBinDir=..\target\release" "installer\circadian.iss"
 ```
 
 ## CI и релизы
