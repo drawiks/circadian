@@ -18,9 +18,11 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use smol::channel;
 
 use crate::platform;
 use crate::theme::{self, palette, Palette};
+use crate::update;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -28,6 +30,27 @@ pub enum Page {
     Journal,
     Week,
     Settings,
+}
+
+#[derive(Clone, Debug, Default)]
+enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Downloading {
+        downloaded: u64,
+        total: u64,
+    },
+    Installing,
+    Error,
+}
+
+enum UpdateEvent {
+    Checked(std::result::Result<Option<update::UpdateInfo>, String>),
+    Progress(u64, u64),
+    Downloaded(std::result::Result<update::Downloaded, String>),
 }
 
 #[derive(Clone)]
@@ -52,6 +75,10 @@ pub struct AppView {
     lang: Lang,
     system_lang: Lang,
     lang_override: Option<Lang>,
+    update: UpdateState,
+    update_info: Option<update::UpdateInfo>,
+    update_error: Option<String>,
+    show_update: bool,
 }
 
 impl AppView {
@@ -78,6 +105,10 @@ impl AppView {
             lang: lang_override.unwrap_or(system_lang),
             system_lang,
             lang_override,
+            update: UpdateState::Idle,
+            update_info: None,
+            update_error: None,
+            show_update: false,
         }
     }
 
@@ -184,6 +215,159 @@ impl AppView {
             .unwrap_or_else(|| Lang::resolve(self.settings.language, self.system_lang));
         theme::apply(cx, self.settings.theme);
         cx.notify();
+    }
+
+    fn check_updates(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.update,
+            UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing
+        ) {
+            return;
+        }
+        self.update = UpdateState::Checking;
+        self.update_error = None;
+        self.show_update = false;
+        let (tx, rx) = channel::unbounded();
+        std::thread::spawn(move || {
+            let result = update::check().map_err(|error| error.to_string());
+            let _ = tx.send_blocking(UpdateEvent::Checked(result));
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(UpdateEvent::Checked(result)) = rx.recv().await {
+                let _ = this.update(cx, |this, cx| this.on_checked(result, cx));
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn on_checked(
+        &mut self,
+        result: std::result::Result<Option<update::UpdateInfo>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(Some(info)) => {
+                self.update_info = Some(info);
+                self.update = UpdateState::Available;
+                self.update_error = None;
+                self.show_update = true;
+            }
+            Ok(None) => {
+                self.update = UpdateState::UpToDate;
+                self.update_info = None;
+                self.notice = Some(self.t("Установлена последняя версия").to_string());
+            }
+            Err(error) => {
+                self.update = UpdateState::Error;
+                self.notice = Some(format!(
+                    "{}: {error}",
+                    self.t("Не удалось проверить обновления")
+                ));
+            }
+        }
+        cx.notify();
+    }
+
+    fn start_download(&mut self, cx: &mut Context<Self>) {
+        let Some(info) = self.update_info.clone() else {
+            return;
+        };
+        if !update::is_installed() {
+            if let Some(portable) = &info.portable {
+                platform::open_url(&portable.url);
+                self.show_update = false;
+            } else {
+                self.notice = Some(
+                    self.t("Портативная версия обновляется вручную.")
+                        .to_string(),
+                );
+            }
+            cx.notify();
+            return;
+        }
+
+        self.update = UpdateState::Downloading {
+            downloaded: 0,
+            total: info.installer.size,
+        };
+        self.update_error = None;
+        let (tx, rx) = channel::unbounded();
+        std::thread::spawn(move || {
+            let result = update::download(&info, |downloaded, total| {
+                let _ = tx.send_blocking(UpdateEvent::Progress(downloaded, total));
+            });
+            let _ = tx.send_blocking(UpdateEvent::Downloaded(
+                result.map_err(|error| error.to_string()),
+            ));
+        });
+        cx.spawn(async move |this, cx| {
+            while let Ok(event) = rx.recv().await {
+                match event {
+                    UpdateEvent::Progress(downloaded, total) => {
+                        let _ = this.update(cx, |this, cx| {
+                            if matches!(this.update, UpdateState::Downloading { .. }) {
+                                this.update = UpdateState::Downloading { downloaded, total };
+                                cx.notify();
+                            }
+                        });
+                    }
+                    UpdateEvent::Downloaded(Ok(downloaded)) => {
+                        let _ = this.update(cx, |this, cx| this.on_downloaded(downloaded, cx));
+                        break;
+                    }
+                    UpdateEvent::Downloaded(Err(error)) => {
+                        let _ = this.update(cx, |this, cx| this.on_download_failed(error, cx));
+                        break;
+                    }
+                    UpdateEvent::Checked(_) => {}
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn on_downloaded(&mut self, downloaded: update::Downloaded, cx: &mut Context<Self>) {
+        self.update = UpdateState::Installing;
+        cx.notify();
+        match update::launch_installer(&downloaded) {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                self.update = UpdateState::Available;
+                self.update_error = Some(error.to_string());
+                cx.notify();
+            }
+        }
+    }
+
+    fn on_download_failed(&mut self, error: String, cx: &mut Context<Self>) {
+        self.update = UpdateState::Available;
+        self.update_error = Some(error);
+        cx.notify();
+    }
+
+    fn on_update_click(&mut self, cx: &mut Context<Self>) {
+        match self.update {
+            UpdateState::Available => {
+                self.show_update = true;
+                cx.notify();
+            }
+            UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing => {}
+            _ => self.check_updates(cx),
+        }
+    }
+
+    fn update_label(&self) -> String {
+        match &self.update {
+            UpdateState::Available => match &self.update_info {
+                Some(info) => format!("{} v{}", self.t("Доступно обновление"), info.version),
+                None => self.t("Доступно обновление").to_string(),
+            },
+            UpdateState::UpToDate => self.t("Установлена последняя версия").to_string(),
+            UpdateState::Error => self.t("Проверить обновления").to_string(),
+            _ => self.t("Проверить обновления").to_string(),
+        }
     }
 
     fn pending(&self) -> Vec<&Session> {
@@ -478,14 +662,7 @@ impl AppView {
                         env!("CARGO_PKG_VERSION"),
                         self.t("локальные данные")
                     )))
-                    .child(
-                        Button::new("sidebar-refresh")
-                            .ghost()
-                            .compact()
-                            .icon(IconName::RefreshCw)
-                            .tooltip(self.t("Обновить"))
-                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                    ),
+                    .child(self.update_button(p, cx)),
             )
     }
 
@@ -533,6 +710,33 @@ impl AppView {
                     .child(label),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.set_page(page, cx)))
+    }
+
+    fn update_button(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let (icon, loading) = match self.update {
+            UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing => {
+                (IconName::Loader, true)
+            }
+            UpdateState::Available => (IconName::ArrowDown, false),
+            UpdateState::UpToDate => (IconName::CircleCheck, false),
+            UpdateState::Error | UpdateState::Idle => (IconName::ArrowDown, false),
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .when(matches!(self.update, UpdateState::Available), |this| {
+                this.child(div().size(px(6.)).rounded(px(99.)).bg(p.accent))
+            })
+            .child(
+                Button::new("update-check")
+                    .ghost()
+                    .compact()
+                    .icon(icon)
+                    .tooltip(self.update_label())
+                    .loading(loading)
+                    .on_click(cx.listener(|this, _, _, cx| this.on_update_click(cx))),
+            )
     }
 
     fn topbar(&self, p: Palette, cx: &mut Context<Self>) -> Div {
@@ -2242,6 +2446,13 @@ impl AppView {
                     .border_t_1()
                     .border_color(p.border)
                     .child(
+                        Button::new("about-update")
+                            .secondary()
+                            .compact()
+                            .label(self.update_label())
+                            .on_click(cx.listener(|this, _, _, cx| this.on_update_click(cx))),
+                    )
+                    .child(
                         Button::new("about-github")
                             .secondary()
                             .compact()
@@ -2443,6 +2654,193 @@ impl AppView {
         cx.notify();
     }
 
+    fn update_modal(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        let Some(info) = &self.update_info else {
+            return div();
+        };
+        let installed = update::is_installed();
+        let downloading = matches!(self.update, UpdateState::Downloading { .. });
+        let installing = matches!(self.update, UpdateState::Installing);
+        let (downloaded, total) = match self.update {
+            UpdateState::Downloading { downloaded, total } => (downloaded, total),
+            _ => (0, info.installer.size),
+        };
+        let ratio = if total > 0 {
+            (downloaded as f32 / total as f32).clamp(0., 1.)
+        } else {
+            0.
+        };
+
+        let mut actions = div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .pt_3()
+            .child(
+                Button::new("update-later")
+                    .ghost()
+                    .compact()
+                    .label(self.t("Позже"))
+                    .when(!downloading && !installing, |this| {
+                        this.on_click(cx.listener(|this, _, _, cx| {
+                            this.show_update = false;
+                            cx.notify();
+                        }))
+                    }),
+            );
+
+        if installed {
+            actions = actions.child(
+                Button::new("update-install")
+                    .primary()
+                    .compact()
+                    .label(if installing {
+                        self.t("Установка…")
+                    } else if downloading {
+                        self.t("Скачивание…")
+                    } else {
+                        self.t("Обновить и перезапустить")
+                    })
+                    .when(!downloading && !installing, |this| {
+                        this.on_click(cx.listener(|this, _, _, cx| this.start_download(cx)))
+                    }),
+            );
+        } else {
+            actions = actions.child(
+                Button::new("update-portable")
+                    .primary()
+                    .compact()
+                    .label(self.t("Скачать ZIP"))
+                    .when(info.portable.is_some(), |this| {
+                        this.on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(portable) =
+                                this.update_info.as_ref().and_then(|i| i.portable.as_ref())
+                            {
+                                platform::open_url(&portable.url);
+                            }
+                            this.show_update = false;
+                            cx.notify();
+                        }))
+                    }),
+            );
+        }
+
+        let card = div()
+            .w(px(540.))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_6()
+            .rounded(px(20.))
+            .bg(p.surface)
+            .border_1()
+            .border_color(p.border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(self.t("Доступно обновление")),
+                    )
+                    .child(div().text_size(px(11.)).text_color(p.muted).child(format!(
+                        "v{} → v{}",
+                        update::CURRENT_VERSION,
+                        info.version
+                    ))),
+            )
+            .child(div().text_size(px(12.)).text_color(p.muted).child(format!(
+                "{}: {}",
+                self.t("Размер"),
+                format_bytes(info.installer.size)
+            )))
+            .when(!installed, |this| {
+                this.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(p.amber)
+                        .child(self.t("Portable: скачайте ZIP и распакуйте вручную.")),
+                )
+            })
+            .when_some(info.notes_url.clone(), |this, url| {
+                this.child(
+                    Button::new("update-notes")
+                        .ghost()
+                        .compact()
+                        .label(self.t("Что нового"))
+                        .on_click(move |_, _, _| platform::open_url(&url)),
+                )
+            })
+            .when(downloading, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .h(px(8.))
+                                .w_full()
+                                .rounded(px(99.))
+                                .overflow_hidden()
+                                .bg(p.surface2)
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(DefiniteLength::Fraction(ratio))
+                                        .bg(p.accent),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .text_size(px(11.))
+                                .text_color(p.muted)
+                                .child(self.t("Скачивание…"))
+                                .child(format!("{}%", (ratio * 100.) as u32)),
+                        ),
+                )
+            })
+            .when(installing, |this| {
+                this.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(p.accent)
+                        .child(self.t("Устанавливаем обновление…")),
+                )
+            })
+            .when_some(self.update_error.clone(), |this, error| {
+                this.child(
+                    div()
+                        .p_3()
+                        .rounded(px(10.))
+                        .bg(p.rose.opacity(0.12))
+                        .text_size(px(11.))
+                        .text_color(p.rose)
+                        .child(error),
+                )
+            })
+            .child(actions);
+
+        div()
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(p.bg.opacity(0.78))
+            .occlude()
+            .child(card)
+    }
+
     fn empty_state(
         &self,
         p: Palette,
@@ -2487,7 +2885,7 @@ impl AppView {
 impl Render for AppView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        div()
+        let mut root = div()
             .id("app-root")
             .flex()
             .size_full()
@@ -2505,7 +2903,11 @@ impl Render for AppView {
                         .child(self.topbar(p, cx))
                         .child(self.content(p, cx)),
                 ),
-            )
+            );
+        if self.show_update && self.update_info.is_some() {
+            root = root.child(self.update_modal(p, cx));
+        }
+        root
     }
 }
 
@@ -2526,6 +2928,15 @@ pub fn make(
         initial_week_start,
     )
     .load()
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    if bytes as f64 >= MB {
+        format!("{:.1} MB", bytes as f64 / MB)
+    } else {
+        format!("{} KB", bytes.div_ceil(1024))
+    }
 }
 
 fn chip(p: Palette, text: &str, color: Hsla) -> Div {

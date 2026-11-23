@@ -3,6 +3,7 @@
 mod demo;
 mod platform;
 mod theme;
+mod update;
 mod view;
 
 use std::borrow::Cow;
@@ -17,6 +18,14 @@ use view::Page;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--apply-update") {
+        update::run_apply_update(&args);
+    }
+    if args.iter().any(|arg| arg == "--version") {
+        println!("{}", update::CURRENT_VERSION);
+        return;
+    }
+    update::cleanup_stale();
     let demo_mode = args.iter().any(|arg| arg == "--demo");
     #[cfg(windows)]
     let _app_mutex = if demo_mode {
