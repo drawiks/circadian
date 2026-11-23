@@ -411,7 +411,7 @@ impl AppView {
                         div()
                             .text_size(px(10.))
                             .text_color(p.muted)
-                            .child("v0.1 · локальные данные"),
+                            .child(format!("v{} · локальные данные", env!("CARGO_PKG_VERSION"))),
                     )
                     .child(
                         Button::new("sidebar-refresh")
@@ -2087,6 +2087,7 @@ impl AppView {
                         .gap_2()
                         .text_size(px(11.))
                         .text_color(p.muted)
+                        .child(format!("Версия {}", env!("CARGO_PKG_VERSION")))
                         .child("Нативный Rust + GPUI, без WebView. Данные — SQLite в LocalAppData.")
                         .child("GPUI и GPUI Kit — Apache-2.0. Шрифты Inter и JetBrains Mono — OFL.")
                         .child("Трекер: выключение ПК = сон, включение = пробуждение. Спорные перерывы требуют одного клика."),
