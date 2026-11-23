@@ -47,6 +47,7 @@ pub struct AppView {
     gaps: Vec<Gap>,
     week_start: NaiveDate,
     notice: Option<String>,
+    confirm_delete: Option<i64>,
 }
 
 impl AppView {
@@ -62,6 +63,7 @@ impl AppView {
             gaps: Vec::new(),
             week_start: week_start(today),
             notice: None,
+            confirm_delete: None,
         }
     }
 
@@ -111,10 +113,16 @@ impl AppView {
         cx.notify();
     }
 
+    fn request_delete(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.confirm_delete = Some(id);
+        cx.notify();
+    }
+
     fn delete_session(&mut self, id: i64, cx: &mut Context<Self>) {
         if let Err(error) = self.store.delete_session(id) {
             self.notice = Some(format!("Не удалось удалить: {error}"));
         }
+        self.confirm_delete = None;
         self.reload();
         cx.notify();
     }
@@ -944,16 +952,6 @@ impl AppView {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.confirm_session(id, SessionKind::Away, cx)
                             })),
-                    )
-                    .child(
-                        Button::new(format!("pending-delete-{id}"))
-                            .ghost()
-                            .compact()
-                            .flex_shrink_0()
-                            .icon(IconName::Delete)
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.delete_session(id, cx)),
-                            ),
                     ),
             );
         }
@@ -1096,6 +1094,41 @@ impl AppView {
                     .child(legend(p, p.amber, "проверить"))
                     .child(legend(p, p.muted, "не сон")),
             )
+    }
+
+    fn delete_action(&self, id: i64, cx: &mut Context<Self>) -> Div {
+        if self.confirm_delete == Some(id) {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    Button::new(format!("journal-delete-confirm-{id}"))
+                        .danger()
+                        .compact()
+                        .label("Удалить")
+                        .on_click(cx.listener(move |this, _, _, cx| this.delete_session(id, cx))),
+                )
+                .child(
+                    Button::new(format!("journal-delete-cancel-{id}"))
+                        .ghost()
+                        .compact()
+                        .icon(IconName::Close)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm_delete = None;
+                            cx.notify();
+                        })),
+                )
+        } else {
+            div().child(
+                Button::new(format!("journal-delete-{id}"))
+                    .ghost()
+                    .compact()
+                    .icon(IconName::Delete)
+                    .tooltip("Удалить сессию")
+                    .on_click(cx.listener(move |this, _, _, cx| this.request_delete(id, cx))),
+            )
+        }
     }
 
     fn recent_sessions_card(&self, p: Palette, cx: &mut Context<Self>) -> Option<Div> {
@@ -1363,109 +1396,116 @@ impl AppView {
             } else {
                 "подтверждён".to_string()
             };
-            let row = div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .px_4()
-                .py_3()
-                .border_t_1()
-                .border_color(p.border.opacity(0.65))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .w(px(168.))
-                        .child(div().w(px(3.)).h(px(22.)).rounded(px(9.)).bg(color))
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .font_family("JetBrains Mono")
-                                .child(session_range(session)),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(px(92.))
-                        .text_size(px(12.))
-                        .child(format_duration(session.duration_minutes())),
-                )
-                .child(div().w(px(110.)).flex().items_center().child(chip(
-                    p,
-                    session.kind.label_ru(),
-                    color,
-                )))
-                .child(
-                    div()
-                        .w(px(118.))
-                        .text_size(px(11.))
-                        .text_color(p.muted)
-                        .child(session.source.label_ru()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .flex_1()
-                        .when(!session.confirmed, |this| {
-                            this.child(chip(p, &status, p.amber))
-                        })
-                        .when(session.confirmed, |this| {
-                            this.child(
+            let row =
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_3()
+                    .border_t_1()
+                    .border_color(p.border.opacity(0.65))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .w(px(168.))
+                            .child(div().w(px(3.)).h(px(22.)).rounded(px(9.)).bg(color))
+                            .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .text_size(px(11.))
-                                    .text_color(p.muted)
-                                    .child(
-                                        Icon::new(if session.kind == SessionKind::Away {
-                                            IconName::Close
-                                        } else {
-                                            IconName::CircleCheck
-                                        })
-                                        .size(px(13.))
-                                        .text_color(
-                                            if session.kind == SessionKind::Away {
+                                    .text_size(px(12.))
+                                    .font_family("JetBrains Mono")
+                                    .child(session_range(session)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(92.))
+                            .text_size(px(12.))
+                            .child(format_duration(session.duration_minutes())),
+                    )
+                    .child(div().w(px(110.)).flex().items_center().child(chip(
+                        p,
+                        session.kind.label_ru(),
+                        color,
+                    )))
+                    .child(
+                        div()
+                            .w(px(118.))
+                            .text_size(px(11.))
+                            .text_color(p.muted)
+                            .child(session.source.label_ru()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .flex_1()
+                            .when(!session.confirmed, |this| {
+                                this.child(chip(p, &status, p.amber))
+                            })
+                            .when(session.confirmed, |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .text_size(px(11.))
+                                        .text_color(p.muted)
+                                        .child(
+                                            Icon::new(if session.kind == SessionKind::Away {
+                                                IconName::Close
+                                            } else {
+                                                IconName::CircleCheck
+                                            })
+                                            .size(px(13.))
+                                            .text_color(if session.kind == SessionKind::Away {
                                                 p.muted
                                             } else {
                                                 p.green
-                                            },
-                                        ),
+                                            }),
+                                        )
+                                        .child(status),
+                                )
+                            })
+                            .when(
+                                session.confirmed && session.kind == SessionKind::Away,
+                                |this| {
+                                    this.child(
+                                        Button::new(format!("journal-restore-{id}"))
+                                            .ghost()
+                                            .compact()
+                                            .label("Это сон")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.confirm_session(id, SessionKind::Sleep, cx)
+                                            })),
                                     )
-                                    .child(status),
+                                },
                             )
-                        })
-                        .when(!session.confirmed, |this| {
-                            this.child(
-                                Button::new(format!("journal-sleep-{id}"))
-                                    .success()
-                                    .compact()
-                                    .label("Сон")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.confirm_session(id, SessionKind::Sleep, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new(format!("journal-away-{id}"))
-                                    .ghost()
-                                    .compact()
-                                    .label("Не сон")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.confirm_session(id, SessionKind::Away, cx)
-                                    })),
-                            )
-                        }),
-                )
-                .child(
-                    Button::new(format!("journal-delete-{id}"))
-                        .ghost()
-                        .compact()
-                        .icon(IconName::Delete)
-                        .on_click(cx.listener(move |this, _, _, cx| this.delete_session(id, cx))),
-                );
+                            .when(!session.confirmed, |this| {
+                                this.child(
+                                    Button::new(format!("journal-sleep-{id}"))
+                                        .success()
+                                        .compact()
+                                        .label("Сон")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.confirm_session(id, SessionKind::Sleep, cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new(format!("journal-away-{id}"))
+                                        .ghost()
+                                        .compact()
+                                        .label("Не сон")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.confirm_session(id, SessionKind::Away, cx)
+                                        })),
+                                )
+                            }),
+                    )
+                    .child(self.delete_action(id, cx));
             card = card.child(row);
         }
 
