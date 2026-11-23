@@ -1,0 +1,165 @@
+<p align="center">
+  <img src="docs/banner.png" alt="Circadian — трекер сна без носимых устройств" width="900">
+</p>
+
+<p align="center">
+  <a href="#screenshots">Скриншоты</a> •
+  <a href="#install">Установка</a> •
+  <a href="#how-it-works">Как это работает</a> •
+  <a href="#privacy">Приватность</a> •
+  <a href="#faq">FAQ</a> •
+  <a href="#build">Сборка</a> •
+  <a href="README.md">English</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/drawiks/circadian/releases/latest"><img src="https://img.shields.io/github/v/release/drawiks/circadian" alt="Последний релиз"></a>
+  <a href="https://github.com/drawiks/circadian/actions/workflows/ci.yml"><img src="https://github.com/drawiks/circadian/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4" alt="Windows 10 и 11">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT"></a>
+</p>
+
+Circadian — трекер сна для ПК. Выключи компьютер, когда идёшь спать, включи утром — и увидишь, сколько ты спал, накопился ли недосып и насколько стабилен график.
+
+Без браслета, телефона и аккаунта. Все данные остаются на компьютере.
+
+**[Скачать для Windows](https://github.com/drawiks/circadian/releases/latest)**
+
+## Скриншоты
+
+| Сегодня | Журнал |
+|---|---|
+| ![Сегодня](docs/screenshots/today-dark.png) | ![Журнал](docs/screenshots/journal-dark.png) |
+
+| Неделя | Светлая тема |
+|---|---|
+| ![Неделя](docs/screenshots/week-dark.png) | ![Светлая тема](docs/screenshots/today-light.png) |
+
+Скриншоты сделаны на английском; язык интерфейса переключается кнопкой EN/RU в верхней панели.
+
+## Что внутри
+
+- **Автоматический трекинг.** Выключил ПК — отбой. Включил — подъём.
+- **Без носимых устройств.** Не нужно заряжать браслет, класть телефон в кровать и регистрироваться.
+- **Понятный отчёт.** Среднее за неделю, недосып, разброс отбоя, самый длинный и короткий сон, короткие факты.
+- **Реальный ПК.** Ребуты, обновления Windows, сон, гибернация и пропажа питания учитываются.
+- **Локально.** SQLite в `%LOCALAPPDATA%\Circadian`. Никакой сети и телеметрии.
+- **Нативный интерфейс.** Английский и русский, тёмная и светлая темы, трей, автозапуск.
+
+## Как это работает
+
+1. Ты выключаешь ПК, когда ложишься спать.
+2. Circadian записывает момент выключения как начало сна.
+3. При следующем включении сессия закрывается и появляется в журнале.
+
+Если перерыв слишком короткий для сна, Circadian спросит, а не будет угадывать:
+
+| Перерыв | Результат |
+|---|---|
+| Меньше 45 минут | Игнорируется: ребут, обновление, короткий уход |
+| 45 минут – 4 часа | Нужно подтвердить: сон или не сон |
+| 4 часа и больше | Считается сном |
+| Сон ПК / гибернация | Считается сном, если перерыв достаточно длинный |
+| Демон не работал | Пробел в данных, а не сон |
+
+Сессия относится к **дню пробуждения**. Сон с 03:00 до 11:00 принадлежит 11-му числу. Несколько сессий и дневной сон поддерживаются.
+
+## Установка
+
+Скачай `Circadian-Setup-*.exe` из [Releases](https://github.com/drawiks/circadian/releases/latest). Установка идёт в `%LOCALAPPDATA%\Programs\Circadian` и не требует администратора.
+
+Установщик не подписан, поэтому SmartScreen может предупредить. Нажми **Подробнее → Выполнить всё равно**.
+
+Есть portable ZIP: распакуй в постоянную папку и запусти `circadian.exe`. Обновление ставится поверх и сохраняет историю. Удаление убирает программу, автозапуск и ярлыки, но историю сна оставляет, если не подтвердить её удаление.
+
+Нужна Windows 10 версии 1903 или новее. Windows 11 поддерживается.
+
+## Приватность
+
+Данные о сне — личные. Circadian не создаёт аккаунт, не отправляет ничего на сервер и не содержит аналитики. История лежит в локальной базе:
+
+```text
+%LOCALAPPDATA%\Circadian\circadian.db
+```
+
+В настройках можно экспортировать все сессии в CSV и удалить базу. При удалении программы история остаётся, пока ты сам не подтвердишь её удаление.
+
+## FAQ
+
+**Почему данных ещё нет?**
+
+Circadian начинает считать после первого выключения или сна ПК. До этого журнал пуст. Демон может работать в трее — вручную ничего вводить не нужно.
+
+**Я не выключаю ПК, а усыпляю.**
+
+Сон и гибернация учитываются, если перерыв достаточно длинный. Короткие перерывы считаются уходом.
+
+**Ребут или обновление Windows.**
+
+Ребуты короче 45 минут игнорируются. Долгое обновление может появиться как «проверить»; отметь его как «не сон».
+
+**Где мои данные?**
+
+`%LOCALAPPDATA%\Circadian`. Путь и кнопка экспорта есть в настройках.
+
+**Куда-то отправляется?**
+
+Нет. Ни аккаунта, ни облака, ни проверки обновлений, ни телеметрии.
+
+**Это медицинский сервис?**
+
+Нет. Circadian фиксирует время и паттерны, но не ставит диагноз и не лечит.
+
+## Сборка
+
+Release-сборка и установщик собираются на Windows или в CI. GPUI компилирует HLSL-шейдеры на этапе release-сборки, поэтому Linux-to-Windows release не поддерживается.
+
+<details>
+<summary>Windows</summary>
+
+```powershell
+rustup toolchain install 1.98.1
+cargo test -p circadian-core
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release -p circadian-app -p circadian-daemon
+```
+
+Установщик собирается Inno Setup 6:
+
+```powershell
+winget install JRSoftware.InnoSetup
+$iscc = Get-ChildItem `
+  "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", `
+  "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" `
+  -ErrorAction SilentlyContinue | Select-Object -First 1
+& $iscc "/DAppVersion=0.2.0" "/DBinDir=..\target\release" "installer\circadian.iss"
+```
+
+</details>
+
+<details>
+<summary>WSL: только debug-превью</summary>
+
+```bash
+cargo install cargo-xwin
+rustup target add x86_64-pc-windows-msvc
+cargo xwin build --target x86_64-pc-windows-msvc -p circadian-app -p circadian-daemon
+```
+
+Debug-сборка подходит для превью интерфейса. Релизы и установщики — из CI или Windows-сборки.
+
+</details>
+
+## Релизы
+
+Пуш тега `v0.2.0` запускает CI, собирает установщик и portable ZIP и публикует их вместе с `SHA256SUMS.txt`. Версия тега должна совпадать с версией в `Cargo.toml`.
+
+## Под капотом
+
+Rust, [GPUI](https://gpui.rs), GPUI Kit и SQLite. Демон в трее использует Win32 power events и в простое занимает 0% CPU. Интерфейс нативный Direct3D — без WebView.
+
+## Лицензия
+
+MIT. См. [LICENSE](LICENSE). Сторонние компоненты и лицензии шрифтов — в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) и папке [licenses](licenses/).
+
+Если Circadian оказался полезен, звезда поможет другим найти проект.

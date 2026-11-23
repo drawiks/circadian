@@ -107,6 +107,7 @@ jobs:
           Copy-Item "crates\daemon\assets\circadian.ico" "$portable\assets\circadian.ico"
           Copy-Item "LICENSE" "$portable\LICENSE"
           Copy-Item "README.md" "$portable\README.md"
+          Copy-Item "README.ru.md" "$portable\README.ru.md"
           Copy-Item "THIRD_PARTY_NOTICES.md" "$portable\THIRD_PARTY_NOTICES.md"
           Copy-Item "licenses\*" "$portable\licenses\" -Recurse
           tar.exe -a -c -f "dist\Circadian-$env:APP_VERSION-portable.zip" -C $portable .
