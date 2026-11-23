@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/daemon", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# GPUI compiles HLSL at runtime when assertions are on; needed for Linux-to-Windows release builds.
+[profile.release.package.gpui-pre-windows]
+debug-assertions = true
