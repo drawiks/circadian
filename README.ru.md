@@ -112,7 +112,7 @@ Circadian начинает считать после первого выключ
 
 ## Сборка
 
-Release-сборка и установщик собираются на Windows или в CI. GPUI компилирует HLSL-шейдеры на этапе release-сборки, поэтому Linux-to-Windows release не поддерживается.
+Release-сборка и установщик собираются на Windows.
 
 <details>
 <summary>Windows</summary>
@@ -136,23 +136,6 @@ $iscc = Get-ChildItem `
 ```
 
 </details>
-
-<details>
-<summary>WSL: только debug-превью</summary>
-
-```bash
-cargo install cargo-xwin
-rustup target add x86_64-pc-windows-msvc
-cargo xwin build --target x86_64-pc-windows-msvc -p circadian-app -p circadian-daemon
-```
-
-Debug-сборка подходит для превью интерфейса. Релизы и установщики — из CI или Windows-сборки.
-
-</details>
-
-## Релизы
-
-Пуш тега `v0.2.0` запускает CI, собирает установщик и portable ZIP и публикует их вместе с `SHA256SUMS.txt`. Версия тега должна совпадать с версией в `Cargo.toml`.
 
 ## Под капотом
 

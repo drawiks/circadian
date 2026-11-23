@@ -110,7 +110,7 @@ No. Circadian records timing and patterns. It is not a diagnosis or treatment to
 
 ## Build from source
 
-Release builds and the installer are built on Windows or in CI. GPUI compiles its HLSL shaders during the release build, so Linux-to-Windows release builds are not supported.
+Release builds and the installer are built on Windows.
 
 <details>
 <summary>Windows</summary>
@@ -134,23 +134,6 @@ $iscc = Get-ChildItem `
 ```
 
 </details>
-
-<details>
-<summary>WSL: debug preview only</summary>
-
-```bash
-cargo install cargo-xwin
-rustup target add x86_64-pc-windows-msvc
-cargo xwin build --target x86_64-pc-windows-msvc -p circadian-app -p circadian-daemon
-```
-
-Use the debug build for UI preview. Releases and installers should come from CI or a Windows build.
-
-</details>
-
-## Releases
-
-Pushing a tag like `v0.2.0` runs CI, builds the unsigned Windows installer and portable ZIP, and publishes them with `SHA256SUMS.txt`. The tag version must match the version in `Cargo.toml`.
 
 ## Under the hood
 
