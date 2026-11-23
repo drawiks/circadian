@@ -25,3 +25,7 @@ rustc-ice-*.txt
 
 # Installer and package output
 dist/
+
+# Python tooling
+__pycache__/
+*.pyc

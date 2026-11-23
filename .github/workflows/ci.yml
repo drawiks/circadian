@@ -3,13 +3,12 @@ name: ci
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -36,8 +35,8 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      - name: Test core
-        run: cargo test --locked -p circadian-core
+      - name: Test
+        run: cargo test --locked -p circadian-core -p circadian-app
 
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -84,18 +83,31 @@ jobs:
         run: |
           $meta = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
           $version = ($meta.packages | Where-Object { $_.name -eq "circadian-app" }).version
-          if ($env:GITHUB_REF -like "refs/tags/v*") {
-            $tag = $env:GITHUB_REF_NAME.Substring(1)
-            if ($tag -ne $version) {
-              throw "Tag $tag does not match Cargo version $version"
-            }
-          }
           Add-Content -Path $env:GITHUB_ENV -Value "APP_VERSION=$version"
 
       - name: Build installer
         shell: pwsh
         run: |
           & $env:ISCC "/DAppVersion=$env:APP_VERSION" "installer\circadian.iss"
+
+      - name: Smoke-test installer
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "circadian-smoke"
+          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+          $setup = "dist\Circadian-Setup-$env:APP_VERSION.exe"
+          $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=$dir"
+          )
+          if ($install.ExitCode -ne 0) { throw "installer exited with $($install.ExitCode)" }
+          foreach ($name in @("circadian.exe", "circadiand.exe", "unins000.exe")) {
+            if (-not (Test-Path (Join-Path $dir $name))) { throw "missing installed file $name" }
+          }
+          $uninstall = Start-Process -FilePath (Join-Path $dir "unins000.exe") -Wait -PassThru -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          )
+          if ($uninstall.ExitCode -ne 0) { throw "uninstaller exited with $($uninstall.ExitCode)" }
+          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 
       - name: Package portable
         shell: pwsh
@@ -131,18 +143,142 @@ jobs:
 
   release:
     needs: windows
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release and guard
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.toml", "rb") as file:
+              print(tomllib.load(file)["workspace"]["package"]["version"])
+          PY
+          )
+          TAG="v$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+          git fetch origin main --depth=1
+          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
+            echo "main moved; skipping release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --tags --force
+          TAG_EXISTS=false
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_EXISTS=true
+            TARGET=$(git rev-list -n1 "$TAG")
+            if [ "$TARGET" != "$GITHUB_SHA" ]; then
+              echo "::error::tag $TAG already points to $TARGET; bump Cargo.toml version"
+              exit 1
+            fi
+          fi
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
+
+          DRAFT=false
+          if gh release view "$TAG" --json isDraft --jq .isDraft > /tmp/release-draft 2>/dev/null; then
+            if [ "$(cat /tmp/release-draft)" = "false" ]; then
+              echo "release $TAG is already published; skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            DRAFT=true
+          fi
+          echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
+        if: steps.meta.outputs.skip != 'true'
         with:
           name: circadian-dist
           path: dist
 
-      - uses: softprops/action-gh-release@v2
+      - uses: dtolnay/rust-toolchain@master
+        if: steps.meta.outputs.skip != 'true'
         with:
-          files: dist/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          toolchain: 1.98.1
+
+      - name: Install manifest signer
+        if: steps.meta.outputs.skip != 'true'
+        run: cargo install rsign2 --locked
+
+      - name: Build manifest
+        if: steps.meta.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "PUBLISHED_AT=$PUBLISHED_AT" >> "$GITHUB_ENV"
+          python3 scripts/update_manifest.py \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dist dist \
+            --published-at "$PUBLISHED_AT"
+
+      - name: Sign manifest
+        if: steps.meta.outputs.skip != 'true'
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "::error::MINISIGN_SECRET_KEY is not configured"
+            exit 1
+          fi
+          install -m 600 /dev/null "$RUNNER_TEMP/minisign.key"
+          printf '%s' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          "$HOME/.cargo/bin/rsign" sign dist/latest.json \
+            --secret-key-file "$RUNNER_TEMP/minisign.key" \
+            --public-key-file crates/app/assets/minisign.pub \
+            --sig-file dist/latest.json.minisig \
+            --trusted-comment "circadian stable $VERSION $PUBLISHED_AT" \
+            --passwordless
+          "$HOME/.cargo/bin/rsign" verify dist/latest.json \
+            --public-key-path crates/app/assets/minisign.pub \
+            --sig-file dist/latest.json.minisig
+          rm -f "$RUNNER_TEMP/minisign.key"
+
+      - name: Create tag
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.tag_exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Circadian $VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Publish draft release
+        if: steps.meta.outputs.skip != 'true'
+        shell: bash
+        env:
+          DRAFT: ${{ steps.meta.outputs.draft }}
+        run: |
+          set -euo pipefail
+          if [ "${DRAFT:-false}" != "true" ]; then
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "Circadian $VERSION" \
+              --generate-notes
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          gh release edit "$TAG" --draft=false --latest --title "Circadian $VERSION"
