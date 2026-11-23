@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use chrono::{Datelike, Duration, Local, NaiveDate, Timelike, Utc};
+use circadian_core::i18n::{count_days, count_sessions, Lang, Language};
 use circadian_core::model::{
     Gap, PersistedState, Session, SessionKind, Settings, Theme as ThemeSetting,
 };
-use circadian_core::report::{build_week_report, FactKind, WeekReport};
+use circadian_core::report::{build_week_report, week_title, FactKind, WeekReport};
 use circadian_core::time::{
-    format_clock, format_date_ru, format_duration, format_signed_duration, local_date,
-    local_datetime, local_offset_minutes, week_start, weekday_ru,
+    format_clock, format_date, format_duration, format_signed_duration, local_date, local_datetime,
+    local_offset_minutes, week_start, weekday,
 };
 use circadian_core::Store;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -48,10 +49,20 @@ pub struct AppView {
     week_start: NaiveDate,
     notice: Option<String>,
     confirm_delete: Option<i64>,
+    lang: Lang,
+    system_lang: Lang,
+    lang_override: Option<Lang>,
 }
 
 impl AppView {
-    pub fn new(store: Rc<Store>, data_dir: PathBuf, page: Page) -> Self {
+    pub fn new(
+        store: Rc<Store>,
+        data_dir: PathBuf,
+        page: Page,
+        system_lang: Lang,
+        lang_override: Option<Lang>,
+        initial_week_start: Option<NaiveDate>,
+    ) -> Self {
         let today = Local::now().date_naive();
         Self {
             store,
@@ -61,10 +72,41 @@ impl AppView {
             state: PersistedState::default(),
             sessions: Vec::new(),
             gaps: Vec::new(),
-            week_start: week_start(today),
+            week_start: initial_week_start.unwrap_or_else(|| week_start(today)),
             notice: None,
             confirm_delete: None,
+            lang: lang_override.unwrap_or(system_lang),
+            system_lang,
+            lang_override,
         }
+    }
+
+    fn t(&self, ru: &'static str) -> &'static str {
+        self.lang.t(ru)
+    }
+
+    fn dur(&self, minutes: i64) -> String {
+        format_duration(minutes, self.lang)
+    }
+
+    fn signed(&self, minutes: i64) -> String {
+        format_signed_duration(minutes, self.lang)
+    }
+
+    fn sdate(&self, date: NaiveDate) -> String {
+        format_date(date, self.lang)
+    }
+
+    fn wd(&self, date: NaiveDate) -> &'static str {
+        weekday(date, self.lang)
+    }
+
+    fn sessions_label(&self, count: usize) -> String {
+        count_sessions(self.lang, count)
+    }
+
+    fn days_label(&self, count: usize) -> String {
+        count_days(self.lang, count)
     }
 
     fn load(mut self) -> Self {
@@ -74,21 +116,26 @@ impl AppView {
 
     fn reload(&mut self) {
         match self.store.load_settings() {
-            Ok(settings) => self.settings = settings,
-            Err(error) => self.notice = Some(format!("Настройки: {error}")),
+            Ok(settings) => {
+                self.settings = settings;
+                self.lang = self
+                    .lang_override
+                    .unwrap_or_else(|| Lang::resolve(self.settings.language, self.system_lang));
+            }
+            Err(error) => self.notice = Some(format!("{}: {error}", self.t("Настройки"))),
         }
         match self.store.load_state() {
             Ok(state) => self.state = state,
-            Err(error) => self.notice = Some(format!("Состояние: {error}")),
+            Err(error) => self.notice = Some(format!("{}: {error}", self.t("Состояние"))),
         }
         match self.store.all_sessions() {
             Ok(sessions) => self.sessions = sessions,
-            Err(error) => self.notice = Some(format!("Сессии: {error}")),
+            Err(error) => self.notice = Some(format!("{}: {error}", self.t("Сессии"))),
         }
         let now = Utc::now();
         match self.store.gaps_between(now - Duration::days(30), now) {
             Ok(gaps) => self.gaps = gaps,
-            Err(error) => self.notice = Some(format!("Пробелы: {error}")),
+            Err(error) => self.notice = Some(format!("{}: {error}", self.t("Пробелы"))),
         }
     }
 
@@ -107,7 +154,7 @@ impl AppView {
 
     fn confirm_session(&mut self, id: i64, kind: SessionKind, cx: &mut Context<Self>) {
         if let Err(error) = self.store.set_kind(id, kind, true) {
-            self.notice = Some(format!("Не удалось сохранить: {error}"));
+            self.notice = Some(format!("{}: {error}", self.t("Не удалось сохранить")));
         }
         self.reload();
         cx.notify();
@@ -120,7 +167,7 @@ impl AppView {
 
     fn delete_session(&mut self, id: i64, cx: &mut Context<Self>) {
         if let Err(error) = self.store.delete_session(id) {
-            self.notice = Some(format!("Не удалось удалить: {error}"));
+            self.notice = Some(format!("{}: {error}", self.t("Не удалось удалить")));
         }
         self.confirm_delete = None;
         self.reload();
@@ -129,9 +176,12 @@ impl AppView {
 
     fn commit_settings(&mut self, cx: &mut Context<Self>) {
         if let Err(error) = self.store.save_settings(&self.settings) {
-            self.notice = Some(format!("Настройки: {error}"));
+            self.notice = Some(format!("{}: {error}", self.t("Настройки")));
         }
         platform::set_autostart(self.settings.autostart);
+        self.lang = self
+            .lang_override
+            .unwrap_or_else(|| Lang::resolve(self.settings.language, self.system_lang));
         theme::apply(cx, self.settings.theme);
         cx.notify();
     }
@@ -174,6 +224,7 @@ impl AppView {
             &self.sessions,
             today - Duration::days(6),
             self.settings.target_sleep_minutes,
+            self.lang,
         )
     }
 
@@ -183,6 +234,7 @@ impl AppView {
             &self.sessions,
             self.week_start,
             self.settings.target_sleep_minutes,
+            self.lang,
         )
     }
 
@@ -226,9 +278,10 @@ impl AppView {
         {
             let until = self.state.paused_until_utc.expect("checked");
             return (
-                "Пауза".to_string(),
+                self.t("Пауза").to_string(),
                 format!(
-                    "до {}",
+                    "{} {}",
+                    self.t("до"),
                     local_datetime(until, local_offset_minutes(until)).format("%H:%M")
                 ),
                 p.amber,
@@ -236,8 +289,12 @@ impl AppView {
         }
         if let Some(start) = self.state.manual_sleep_start_utc {
             return (
-                "Сон вручную".to_string(),
-                format!("с {}", format_clock(start, local_offset_minutes(start))),
+                self.t("Сон вручную").to_string(),
+                format!(
+                    "{} {}",
+                    self.t("с"),
+                    format_clock(start, local_offset_minutes(start))
+                ),
                 p.accent,
             );
         }
@@ -246,26 +303,30 @@ impl AppView {
             .awake_since_utc
             .map(|start| (now - start).num_minutes().max(0))
             .unwrap_or(0);
-        ("Бодрствуешь".to_string(), format_duration(awake), p.green)
+        (self.t("Бодрствуешь").to_string(), self.dur(awake), p.green)
     }
 
     fn page_title(&self) -> (&'static str, String) {
         let today = Local::now().date_naive();
         match self.page {
             Page::Today => (
-                "Сегодня",
+                self.t("Сегодня"),
                 format!(
-                    "{} · цель {}",
-                    format_date_ru(today),
-                    format_duration(self.settings.target_sleep_minutes)
+                    "{} · {} {}",
+                    self.sdate(today),
+                    self.t("цель"),
+                    self.dur(self.settings.target_sleep_minutes)
                 ),
             ),
-            Page::Journal => ("Журнал", "Все сессии по дню пробуждения".to_string()),
-            Page::Week => (
-                "Неделя",
-                circadian_core::report::week_title(self.week_start),
+            Page::Journal => (
+                self.t("Журнал"),
+                self.t("Все сессии по дню пробуждения").to_string(),
             ),
-            Page::Settings => ("Настройки", "Пороги, тема и хранение данных".to_string()),
+            Page::Week => (self.t("Неделя"), week_title(self.week_start, self.lang)),
+            Page::Settings => (
+                self.t("Настройки"),
+                self.t("Пороги, тема и хранение данных").to_string(),
+            ),
         }
     }
 
@@ -274,7 +335,7 @@ impl AppView {
         let last = self.last_session().map(|session| {
             format!(
                 "{} · {}",
-                format_duration(session.duration_minutes()),
+                self.dur(session.duration_minutes()),
                 format_clock(session.end_utc, session.end_offset_min)
             )
         });
@@ -323,7 +384,7 @@ impl AppView {
                                 div()
                                     .text_size(px(11.))
                                     .text_color(p.muted)
-                                    .child("сон без ручного ввода"),
+                                    .child(self.t("сон без ручного ввода")),
                             ),
                     ),
             )
@@ -332,12 +393,19 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(self.nav_item(p, "nav-today", IconName::Sun, "Сегодня", Page::Today, cx))
+                    .child(self.nav_item(
+                        p,
+                        "nav-today",
+                        IconName::Sun,
+                        self.t("Сегодня"),
+                        Page::Today,
+                        cx,
+                    ))
                     .child(self.nav_item(
                         p,
                         "nav-journal",
                         IconName::Calendar,
-                        "Журнал",
+                        self.t("Журнал"),
                         Page::Journal,
                         cx,
                     ))
@@ -345,7 +413,7 @@ impl AppView {
                         p,
                         "nav-week",
                         IconName::ChartPie,
-                        "Неделя",
+                        self.t("Неделя"),
                         Page::Week,
                         cx,
                     ))
@@ -353,7 +421,7 @@ impl AppView {
                         p,
                         "nav-settings",
                         IconName::Settings,
-                        "Настройки",
+                        self.t("Настройки"),
                         Page::Settings,
                         cx,
                     )),
@@ -393,13 +461,11 @@ impl AppView {
                                 div()
                                     .text_size(px(10.))
                                     .text_color(p.muted)
-                                    .child("ПОСЛЕДНИЙ СОН"),
+                                    .child(self.t("ПОСЛЕДНИЙ СОН")),
                             )
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .child(last.unwrap_or_else(|| "пока нет данных".to_string())),
-                            ),
+                            .child(div().text_size(px(13.)).child(
+                                last.unwrap_or_else(|| self.t("пока нет данных").to_string()),
+                            )),
                     ),
             )
             .child(
@@ -407,18 +473,17 @@ impl AppView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(p.muted)
-                            .child(format!("v{} · локальные данные", env!("CARGO_PKG_VERSION"))),
-                    )
+                    .child(div().text_size(px(10.)).text_color(p.muted).child(format!(
+                        "v{} · {}",
+                        env!("CARGO_PKG_VERSION"),
+                        self.t("локальные данные")
+                    )))
                     .child(
                         Button::new("sidebar-refresh")
                             .ghost()
                             .compact()
                             .icon(IconName::RefreshCw)
-                            .tooltip("Обновить")
+                            .tooltip(self.t("Обновить"))
                             .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     ),
             )
@@ -470,7 +535,7 @@ impl AppView {
             .on_click(cx.listener(move |this, _, _, cx| this.set_page(page, cx)))
     }
 
-    fn topbar(&self, p: Palette) -> Div {
+    fn topbar(&self, p: Palette, cx: &mut Context<Self>) -> Div {
         let (title, subtitle) = self.page_title();
         let pending = self.pending().len();
         let today = Local::now().date_naive();
@@ -516,10 +581,35 @@ impl AppView {
                                     div()
                                         .text_size(px(12.))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child(attention_text(pending)),
+                                        .child(self.attention_text(pending)),
                                 ),
                         )
                     })
+                    .child(
+                        div()
+                            .id("topbar-language")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .px_3()
+                            .py_1()
+                            .rounded(px(99.))
+                            .cursor_pointer()
+                            .bg(p.surface2)
+                            .border_1()
+                            .border_color(p.border)
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(if self.lang.is_russian() { "RU" } else { "EN" })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.language = if this.lang.is_russian() {
+                                    Language::English
+                                } else {
+                                    Language::Russian
+                                };
+                                this.commit_settings(cx);
+                            })),
+                    )
                     .child(
                         div()
                             .flex()
@@ -540,7 +630,7 @@ impl AppView {
                                 div()
                                     .text_size(px(12.))
                                     .text_color(p.muted)
-                                    .child(format_date_ru(today)),
+                                    .child(self.sdate(today)),
                             ),
                     ),
             )
@@ -628,14 +718,14 @@ impl AppView {
                         div()
                             .text_size(px(10.))
                             .text_color(p.muted)
-                            .child("ПОСЛЕДНИЙ СОН"),
+                            .child(self.t("ПОСЛЕДНИЙ СОН")),
                     )
                     .child(
                         div()
                             .text_size(px(40.))
                             .font_weight(FontWeight::BOLD)
                             .child(
-                                last.map(|session| format_duration(session.duration_minutes()))
+                                last.map(|session| self.dur(session.duration_minutes()))
                                     .unwrap_or_else(|| "—".to_string()),
                             ),
                     )
@@ -654,10 +744,10 @@ impl AppView {
                                         format_clock(session.end_utc, session.end_offset_min)
                                     )
                                 })
-                                .unwrap_or_else(|| "Данных пока нет".to_string()),
+                                .unwrap_or_else(|| self.t("Данных пока нет").to_string()),
                             )
                             .when_some(last, |this, session| {
-                                this.child(chip(p, session.source.label_ru(), p.muted))
+                                this.child(chip(p, self.t(session.source.label_ru()), p.muted))
                             }),
                     ),
             )
@@ -692,11 +782,16 @@ impl AppView {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(div().text_size(px(11.)).text_color(p.muted).child("Цель"))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(p.muted)
+                                    .child(self.t("Цель")),
+                            )
                             .child(
                                 div()
                                     .text_size(px(13.))
-                                    .child(format_duration(self.settings.target_sleep_minutes)),
+                                    .child(self.dur(self.settings.target_sleep_minutes)),
                             ),
                     )
                     .child(
@@ -704,12 +799,17 @@ impl AppView {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(div().text_size(px(11.)).text_color(p.muted).child("7 дней"))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(p.muted)
+                                    .child(self.t("7 дней")),
+                            )
                             .child(
                                 div()
                                     .text_size(px(13.))
                                     .child(if report.days_with_data > 0 {
-                                        format_duration(report.avg_per_day_min)
+                                        self.dur(report.avg_per_day_min)
                                     } else {
                                         "—".to_string()
                                     }),
@@ -725,15 +825,15 @@ impl AppView {
             .map(|s| s.duration_minutes())
             .sum();
         let debt_label = if report.debt_min > 0 {
-            format_duration(report.debt_min)
+            self.dur(report.debt_min)
         } else if report.debt_min < 0 {
-            format!("запас {}", format_duration(-report.debt_min))
+            format!("{} {}", self.t("запас"), self.dur(-report.debt_min))
         } else {
             "—".to_string()
         };
         let regularity = report
             .regularity_sd_min
-            .map(|minutes| format!("±{}", format_duration(minutes)))
+            .map(|minutes| format!("±{}", self.dur(minutes)))
             .unwrap_or_else(|| "—".to_string());
 
         page = page.child(
@@ -742,37 +842,38 @@ impl AppView {
                 .gap_4()
                 .child(self.stat_card(
                     p,
-                    "Сон сегодня",
-                    format_duration(today_total),
+                    self.t("Сон сегодня"),
+                    self.dur(today_total),
                     if today_total == 0 {
-                        "ещё нет сессий".to_string()
+                        self.t("ещё нет сессий").to_string()
                     } else {
-                        format!("{} сессий", sessions.iter().filter(|s| s.confirmed).count())
+                        self.sessions_label(sessions.iter().filter(|s| s.confirmed).count())
                     },
                     p.accent,
                 ))
                 .child(self.stat_card(
                     p,
-                    "Среднее за 7 дней",
+                    self.t("Среднее за 7 дней"),
                     if report.days_with_data > 0 {
-                        format_duration(report.avg_per_day_min)
+                        self.dur(report.avg_per_day_min)
                     } else {
                         "—".to_string()
                     },
-                    format!("{} дн. с данными", report.days_with_data),
+                    self.days_label(report.days_with_data),
                     p.cyan,
                 ))
                 .child(self.stat_card(
                     p,
                     if report.debt_min >= 0 {
-                        "Недосып"
+                        self.t("Недосып")
                     } else {
-                        "Запас"
+                        self.t("Запас")
                     },
                     debt_label,
                     format!(
-                        "цель {}",
-                        format_duration(self.settings.target_sleep_minutes)
+                        "{} {}",
+                        self.t("цель"),
+                        self.dur(self.settings.target_sleep_minutes)
                     ),
                     if report.debt_min > 0 {
                         p.amber
@@ -782,9 +883,9 @@ impl AppView {
                 ))
                 .child(self.stat_card(
                     p,
-                    "Разброс отбоя",
+                    self.t("Разброс отбоя"),
                     regularity,
-                    "по последним 7 дням".to_string(),
+                    self.t("по последним 7 дням").to_string(),
                     p.accent,
                 )),
         );
@@ -802,8 +903,8 @@ impl AppView {
         if sessions.is_empty() && last.is_none() {
             page = page.child(self.empty_state(
                 p,
-                "Пока нет данных",
-                "Демон начнёт отслеживание после первого выключения ПК. Держи Circadian в трее — дальше всё само.",
+                self.t("Пока нет данных"),
+                self.t("Демон начнёт отслеживание после первого выключения ПК. Держи Circadian в трее — дальше всё само."),
                 IconName::Moon,
             ));
         }
@@ -889,13 +990,13 @@ impl AppView {
                                 div()
                                     .text_size(px(14.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Нужно подтвердить"),
+                                    .child(self.t("Нужно подтвердить")),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.))
                                     .text_color(p.muted)
-                                    .child("Это сон, короткий уход или перезагрузка?"),
+                                    .child(self.t("Это сон, короткий уход или перезагрузка?")),
                             ),
                     )
                     .child(div().flex_1()),
@@ -918,18 +1019,18 @@ impl AppView {
                             .flex_col()
                             .gap_1()
                             .child(div().text_size(px(11.)).text_color(p.muted).child(
-                                format_date_ru(local_date(session.end_utc, session.end_offset_min)),
+                                self.sdate(local_date(session.end_utc, session.end_offset_min)),
                             ))
                             .child(
                                 div()
                                     .text_size(px(13.))
                                     .font_family("JetBrains Mono")
-                                    .child(session_range(session)),
+                                    .child(self.session_range(session)),
                             )
                             .child(div().text_size(px(11.)).text_color(p.muted).child(format!(
                                 "{} · {}",
-                                format_duration(session.duration_minutes()),
-                                session.source.label_ru()
+                                self.dur(session.duration_minutes()),
+                                self.t(session.source.label_ru())
                             ))),
                     )
                     .child(div().flex_1())
@@ -938,7 +1039,7 @@ impl AppView {
                             .success()
                             .compact()
                             .flex_shrink_0()
-                            .label("Это сон")
+                            .label(self.t("Это сон"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.confirm_session(id, SessionKind::Sleep, cx)
                             })),
@@ -948,7 +1049,7 @@ impl AppView {
                             .ghost()
                             .compact()
                             .flex_shrink_0()
-                            .label("Не сон")
+                            .label(self.t("Не сон"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.confirm_session(id, SessionKind::Away, cx)
                             })),
@@ -956,12 +1057,13 @@ impl AppView {
             );
         }
         if pending.len() > 3 {
-            card = card.child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(p.muted)
-                    .child(format!("и ещё {}", pending.len() - 3)),
-            );
+            card = card.child(div().text_size(px(11.)).text_color(p.muted).child(
+                if self.lang.is_russian() {
+                    format!("и ещё {}", pending.len() - 3)
+                } else {
+                    format!("and {} more", pending.len() - 3)
+                },
+            ));
         }
         card
     }
@@ -1074,13 +1176,13 @@ impl AppView {
                         div()
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Таймлайн дня"),
+                            .child(self.t("Таймлайн дня")),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(p.muted)
-                            .child(format_date_ru(date)),
+                            .child(self.sdate(date)),
                     ),
             )
             .child(track)
@@ -1090,10 +1192,43 @@ impl AppView {
                     .flex()
                     .items_center()
                     .gap_4()
-                    .child(legend(p, p.accent, "сон"))
-                    .child(legend(p, p.amber, "проверить"))
-                    .child(legend(p, p.muted, "не сон")),
+                    .child(legend(p, p.accent, self.t("сон")))
+                    .child(legend(p, p.amber, self.t("проверить")))
+                    .child(legend(p, p.muted, self.t("не сон"))),
             )
+    }
+
+    fn attention_text(&self, count: usize) -> String {
+        if count == 1 {
+            if self.lang.is_russian() {
+                "1 ждёт подтверждения".to_string()
+            } else {
+                "1 needs review".to_string()
+            }
+        } else {
+            format!("{count} {}", self.t("ждут подтверждения"))
+        }
+    }
+
+    fn session_range(&self, session: &Session) -> String {
+        let start = local_datetime(session.start_utc, session.start_offset_min);
+        let end = local_datetime(session.end_utc, session.end_offset_min);
+        let span = end.date().signed_duration_since(start.date()).num_days();
+        let suffix = if span > 0 {
+            if self.lang.is_russian() {
+                format!(" +{span}д")
+            } else {
+                format!(" +{span}d")
+            }
+        } else {
+            String::new()
+        };
+        format!(
+            "{} – {}{}",
+            start.format("%H:%M"),
+            end.format("%H:%M"),
+            suffix
+        )
     }
 
     fn delete_action(&self, id: i64, cx: &mut Context<Self>) -> Div {
@@ -1106,7 +1241,7 @@ impl AppView {
                     Button::new(format!("journal-delete-confirm-{id}"))
                         .danger()
                         .compact()
-                        .label("Удалить")
+                        .label(self.t("Удалить"))
                         .on_click(cx.listener(move |this, _, _, cx| this.delete_session(id, cx))),
                 )
                 .child(
@@ -1125,7 +1260,7 @@ impl AppView {
                     .ghost()
                     .compact()
                     .icon(IconName::Delete)
-                    .tooltip("Удалить сессию")
+                    .tooltip(self.t("Удалить сессию"))
                     .on_click(cx.listener(move |this, _, _, cx| this.request_delete(id, cx))),
             )
         }
@@ -1162,13 +1297,13 @@ impl AppView {
                         div()
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Последние сессии"),
+                            .child(self.t("Последние сессии")),
                     )
                     .child(
                         Button::new("recent-open-journal")
                             .ghost()
                             .compact()
-                            .label("Весь журнал")
+                            .label(self.t("Весь журнал"))
                             .icon(IconName::ArrowRight)
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.set_page(Page::Journal, cx)),
@@ -1189,32 +1324,27 @@ impl AppView {
                     .border_t_1()
                     .border_color(p.border.opacity(0.65))
                     .child(div().w(px(3.)).h(px(24.)).rounded(px(9.)).bg(color))
-                    .child(
-                        div()
-                            .w(px(112.))
-                            .text_size(px(12.))
-                            .child(format_date_ru(date)),
-                    )
+                    .child(div().w(px(112.)).text_size(px(12.)).child(self.sdate(date)))
                     .child(
                         div()
                             .w(px(150.))
                             .text_size(px(12.))
                             .font_family("JetBrains Mono")
-                            .child(session_range(session)),
+                            .child(self.session_range(session)),
                     )
                     .child(
                         div()
                             .w(px(88.))
                             .text_size(px(12.))
-                            .child(format_duration(session.duration_minutes())),
+                            .child(self.dur(session.duration_minutes())),
                     )
-                    .child(chip(p, session.kind.label_ru(), color))
+                    .child(chip(p, self.t(session.kind.label_ru()), color))
                     .child(
                         div()
                             .flex_1()
                             .text_size(px(11.))
                             .text_color(p.muted)
-                            .child(session.source.label_ru()),
+                            .child(self.t(session.source.label_ru())),
                     ),
             );
         }
@@ -1246,7 +1376,7 @@ impl AppView {
                         div()
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Пробелы в данных"),
+                            .child(self.t("Пробелы в данных")),
                     ),
             );
         for gap in self.gaps.iter().take(4) {
@@ -1287,21 +1417,18 @@ impl AppView {
                             div()
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!("{} сессий", session_count)),
+                                .child(self.sessions_label(session_count)),
                         )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(p.muted)
-                                .child("показаны последние 365 дней · дата = день пробуждения"),
-                        ),
+                        .child(div().text_size(px(11.)).text_color(p.muted).child(
+                            self.t("показаны последние 365 дней · дата = день пробуждения"),
+                        )),
                 )
                 .child(
                     Button::new("journal-refresh")
                         .secondary()
                         .compact()
                         .icon(IconName::RefreshCw)
-                        .label("Обновить")
+                        .label(self.t("Обновить"))
                         .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                 ),
         );
@@ -1309,8 +1436,8 @@ impl AppView {
         if groups.is_empty() {
             return page.child(self.empty_state(
                 p,
-                "Журнал пуст",
-                "Как только демон зафиксирует первый сон, здесь появится таблица по дням.",
+                self.t("Журнал пуст"),
+                self.t("Как только демон зафиксирует первый сон, здесь появится таблица по дням."),
                 IconName::Calendar,
             ));
         }
@@ -1347,12 +1474,12 @@ impl AppView {
                                 div()
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(format_date_ru(group.date)),
+                                    .child(self.sdate(group.date)),
                             )
                             .when(group.pending > 0, |this| {
                                 this.child(chip(
                                     p,
-                                    &format!("{} проверить", group.pending),
+                                    &format!("{} {}", group.pending, self.t("проверить")),
                                     p.amber,
                                 ))
                             }),
@@ -1362,7 +1489,7 @@ impl AppView {
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(if group.total_min > 0 {
-                                format_duration(group.total_min)
+                                self.dur(group.total_min)
                             } else {
                                 "—".to_string()
                             }),
@@ -1378,11 +1505,11 @@ impl AppView {
                 .gap_3()
                 .text_size(px(9.))
                 .text_color(p.muted)
-                .child(div().w(px(168.)).child("ВРЕМЯ"))
-                .child(div().w(px(92.)).child("СОН"))
-                .child(div().w(px(110.)).child("ТИП"))
-                .child(div().w(px(118.)).child("ИСТОЧНИК"))
-                .child(div().flex_1().child("СТАТУС"))
+                .child(div().w(px(168.)).child(self.t("ВРЕМЯ")))
+                .child(div().w(px(92.)).child(self.t("СОН")))
+                .child(div().w(px(110.)).child(self.t("ТИП")))
+                .child(div().w(px(118.)).child(self.t("ИСТОЧНИК")))
+                .child(div().flex_1().child(self.t("СТАТУС")))
                 .child(div().w(px(34.))),
         );
 
@@ -1390,11 +1517,11 @@ impl AppView {
             let id = session.id;
             let color = session_color(p, session);
             let status = if !session.confirmed {
-                "проверить".to_string()
+                self.t("проверить").to_string()
             } else if session.kind == SessionKind::Away {
-                "не сон".to_string()
+                self.t("не сон").to_string()
             } else {
-                "подтверждён".to_string()
+                self.t("подтверждён").to_string()
             };
             let row =
                 div()
@@ -1416,18 +1543,18 @@ impl AppView {
                                 div()
                                     .text_size(px(12.))
                                     .font_family("JetBrains Mono")
-                                    .child(session_range(session)),
+                                    .child(self.session_range(session)),
                             ),
                     )
                     .child(
                         div()
                             .w(px(92.))
                             .text_size(px(12.))
-                            .child(format_duration(session.duration_minutes())),
+                            .child(self.dur(session.duration_minutes())),
                     )
                     .child(div().w(px(110.)).flex().items_center().child(chip(
                         p,
-                        session.kind.label_ru(),
+                        self.t(session.kind.label_ru()),
                         color,
                     )))
                     .child(
@@ -1435,7 +1562,7 @@ impl AppView {
                             .w(px(118.))
                             .text_size(px(11.))
                             .text_color(p.muted)
-                            .child(session.source.label_ru()),
+                            .child(self.t(session.source.label_ru())),
                     )
                     .child(
                         div()
@@ -1477,7 +1604,7 @@ impl AppView {
                                         Button::new(format!("journal-restore-{id}"))
                                             .ghost()
                                             .compact()
-                                            .label("Это сон")
+                                            .label(self.t("Это сон"))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.confirm_session(id, SessionKind::Sleep, cx)
                                             })),
@@ -1489,7 +1616,7 @@ impl AppView {
                                     Button::new(format!("journal-sleep-{id}"))
                                         .success()
                                         .compact()
-                                        .label("Сон")
+                                        .label(self.t("Сон"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.confirm_session(id, SessionKind::Sleep, cx)
                                         })),
@@ -1498,7 +1625,7 @@ impl AppView {
                                     Button::new(format!("journal-away-{id}"))
                                         .ghost()
                                         .compact()
-                                        .label("Не сон")
+                                        .label(self.t("Не сон"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.confirm_session(id, SessionKind::Away, cx)
                                         })),
@@ -1551,7 +1678,7 @@ impl AppView {
                             div()
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(circadian_core::report::week_title(self.week_start)),
+                                .child(week_title(self.week_start, self.lang)),
                         )
                         .child(
                             Button::new("week-next")
@@ -1568,7 +1695,7 @@ impl AppView {
                                 Button::new("week-now")
                                     .ghost()
                                     .compact()
-                                    .label("К текущей")
+                                    .label(self.t("К текущей"))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.week_start = current_week;
                                         cx.notify();
@@ -1577,39 +1704,43 @@ impl AppView {
                         }),
                 )
                 .child(div().text_size(px(11.)).text_color(p.muted).child(format!(
-                    "цель {}",
-                    format_duration(self.settings.target_sleep_minutes)
+                    "{} {}",
+                    self.t("цель"),
+                    self.dur(self.settings.target_sleep_minutes)
                 ))),
         );
 
         if report.session_count == 0 {
             return page.child(self.empty_state(
                 p,
-                "За эту неделю нет данных",
-                "Переключись на другую неделю или подожди, пока демон соберёт первые сессии.",
+                self.t("За эту неделю нет данных"),
+                self.t(
+                    "Переключись на другую неделю или подожди, пока демон соберёт первые сессии.",
+                ),
                 IconName::ChartPie,
             ));
         }
 
         let debt_value = if report.debt_min > 0 {
-            format_duration(report.debt_min)
+            self.dur(report.debt_min)
         } else if report.debt_min < 0 {
-            format!("запас {}", format_duration(-report.debt_min))
+            format!("{} {}", self.t("запас"), self.dur(-report.debt_min))
         } else {
             "—".to_string()
         };
         let delta_hint = report
             .previous_total_min
             .map(|prev| {
-                format!(
-                    "{} к прошлой",
-                    format_signed_duration(report.total_min - prev)
-                )
+                if self.lang.is_russian() {
+                    format!("{} к прошлой", self.signed(report.total_min - prev))
+                } else {
+                    format!("{} vs last week", self.signed(report.total_min - prev))
+                }
             })
-            .unwrap_or_else(|| "нет прошлой недели".to_string());
+            .unwrap_or_else(|| self.t("нет прошлой недели").to_string());
         let regularity = report
             .regularity_sd_min
-            .map(|minutes| format!("±{}", format_duration(minutes)))
+            .map(|minutes| format!("±{}", self.dur(minutes)))
             .unwrap_or_else(|| "—".to_string());
 
         page = page.child(
@@ -1618,24 +1749,24 @@ impl AppView {
                 .gap_4()
                 .child(self.stat_card(
                     p,
-                    "Всего сна",
-                    format_duration(report.total_min),
-                    format!("{} сессий", report.session_count),
+                    self.t("Всего сна"),
+                    self.dur(report.total_min),
+                    self.sessions_label(report.session_count),
                     p.accent,
                 ))
                 .child(self.stat_card(
                     p,
-                    "Среднее",
-                    format_duration(report.avg_per_day_min),
-                    format!("{} дн. с данными", report.days_with_data),
+                    self.t("Среднее"),
+                    self.dur(report.avg_per_day_min),
+                    self.days_label(report.days_with_data),
                     p.cyan,
                 ))
                 .child(self.stat_card(
                     p,
                     if report.debt_min >= 0 {
-                        "Недосып"
+                        self.t("Недосып")
                     } else {
-                        "Запас"
+                        self.t("Запас")
                     },
                     debt_value,
                     delta_hint,
@@ -1647,9 +1778,9 @@ impl AppView {
                 ))
                 .child(self.stat_card(
                     p,
-                    "Регулярность",
+                    self.t("Регулярность"),
                     regularity,
-                    "разброс отбоя".to_string(),
+                    self.t("разброс отбоя").to_string(),
                     p.accent,
                 )),
         );
@@ -1669,7 +1800,7 @@ impl AppView {
             let total = day.total_min;
             let label = day
                 .date
-                .map(|date| format!("{} {}", weekday_ru(date), date.day()))
+                .map(|date| format!("{} {}", self.wd(date), date.day()))
                 .unwrap_or_default();
             let target_y = self.settings.target_sleep_minutes as f32 / max_minutes * chart_height;
             bars = bars.child(
@@ -1685,7 +1816,7 @@ impl AppView {
                             .text_size(px(9.))
                             .text_color(if total > 0 { p.text } else { p.muted })
                             .child(if total > 0 {
-                                format_duration(total)
+                                self.dur(total)
                             } else {
                                 String::new()
                             }),
@@ -1751,16 +1882,16 @@ impl AppView {
                             div()
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("Сон по дням"),
+                                .child(self.t("Сон по дням")),
                         )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap_4()
-                                .child(legend(p, p.accent, "сон"))
-                                .child(legend(p, p.cyan, "дневной"))
-                                .child(legend(p, p.amber, "цель")),
+                                .child(legend(p, p.accent, self.t("сон")))
+                                .child(legend(p, p.cyan, self.t("дневной")))
+                                .child(legend(p, p.amber, self.t("цель"))),
                         ),
                 )
                 .child(bars),
@@ -1787,7 +1918,7 @@ impl AppView {
                         div()
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Факты недели"),
+                            .child(self.t("Факты недели")),
                     ),
             );
         for fact in &report.facts {
@@ -1828,15 +1959,15 @@ impl AppView {
         page = page.child(
             self.settings_card(
                 p,
-                "Цель и пороги",
-                "Как Circadian отличает сон от ребута и короткого ухода.",
+                self.t("Цель и пороги"),
+                self.t("Как Circadian отличает сон от ребута и короткого ухода."),
             )
             .child(self.stepper_row(
                 p,
                 "goal",
-                "Цель сна",
-                format_duration(self.settings.target_sleep_minutes),
-                "используется в недельном отчёте",
+                self.t("Цель сна"),
+                self.dur(self.settings.target_sleep_minutes),
+                self.t("используется в недельном отчёте"),
                 cx,
                 |this, cx| {
                     this.settings.target_sleep_minutes =
@@ -1852,9 +1983,9 @@ impl AppView {
             .child(self.stepper_row(
                 p,
                 "ignore",
-                "Игнорировать до",
-                format!("{} мин", self.settings.ignore_below_minutes),
-                "ребуты и мгновенные перерывы",
+                self.t("Игнорировать до"),
+                self.dur(self.settings.ignore_below_minutes),
+                self.t("ребуты и мгновенные перерывы"),
                 cx,
                 |this, cx| {
                     this.settings.ignore_below_minutes =
@@ -1870,9 +2001,9 @@ impl AppView {
             .child(self.stepper_row(
                 p,
                 "pending",
-                "Спрашивать до",
-                format_duration(self.settings.pending_below_minutes),
-                "короче — не сон, длиннее — уже сон",
+                self.t("Спрашивать от"),
+                self.dur(self.settings.pending_below_minutes),
+                self.t("от этого порога до автосна — подтверждение"),
                 cx,
                 |this, cx| {
                     this.settings.pending_below_minutes =
@@ -1889,9 +2020,9 @@ impl AppView {
             .child(self.stepper_row(
                 p,
                 "confirm",
-                "Автосон от",
-                format_duration(self.settings.auto_confirm_minutes),
-                "такие перерывы считаются сном сразу",
+                self.t("Автосон от"),
+                self.dur(self.settings.auto_confirm_minutes),
+                self.t("такие перерывы считаются сном сразу"),
                 cx,
                 |this, cx| {
                     this.settings.auto_confirm_minutes =
@@ -1917,12 +2048,16 @@ impl AppView {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_size(px(13.)).child("Считать сон ПК сном"))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .child(self.t("Считать сон ПК сном")),
+                            )
                             .child(
                                 div()
                                     .text_size(px(11.))
                                     .text_color(p.muted)
-                                    .child("suspend и гибернация как обычный сон"),
+                                    .child(self.t("suspend и гибернация как обычный сон")),
                             ),
                     )
                     .child(
@@ -1937,93 +2072,97 @@ impl AppView {
         );
 
         page = page.child(
-            self.settings_card(p, "Приложение", "Автозапуск, тема и поведение окна.")
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_size(px(13.))
-                                        .child("Автозапуск при входе в Windows"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(p.muted)
-                                        .child("демон в трее запускается автоматически"),
-                                ),
-                        )
-                        .child(
-                            Switch::new("autostart-switch")
-                                .checked(self.settings.autostart)
-                                .on_change(cx.listener(|this, value, _, cx| {
-                                    this.settings.autostart = *value;
-                                    this.commit_settings(cx);
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .pt_2()
-                        .border_t_1()
-                        .border_color(p.border)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(div().text_size(px(13.)).child("Тема"))
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(p.muted)
-                                        .child("Circadian dark / light"),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(self.theme_pill(
-                                    p,
-                                    "theme-dark",
-                                    "Тёмная",
-                                    ThemeSetting::Dark,
-                                    cx,
-                                ))
-                                .child(self.theme_pill(
-                                    p,
-                                    "theme-light",
-                                    "Светлая",
-                                    ThemeSetting::Light,
-                                    cx,
-                                ))
-                                .child(self.theme_pill(
-                                    p,
-                                    "theme-system",
-                                    "Система",
-                                    ThemeSetting::System,
-                                    cx,
-                                )),
-                        ),
-                ),
+            self.settings_card(
+                p,
+                self.t("Приложение"),
+                self.t("Автозапуск, тема и поведение окна."),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .child(self.t("Автозапуск при входе в Windows")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(p.muted)
+                                    .child(self.t("демон в трее запускается автоматически")),
+                            ),
+                    )
+                    .child(
+                        Switch::new("autostart-switch")
+                            .checked(self.settings.autostart)
+                            .on_change(cx.listener(|this, value, _, cx| {
+                                this.settings.autostart = *value;
+                                this.commit_settings(cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(p.border)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().text_size(px(13.)).child(self.t("Тема")))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(p.muted)
+                                    .child("Circadian dark / light"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(self.theme_pill(
+                                p,
+                                "theme-dark",
+                                self.t("Тёмная"),
+                                ThemeSetting::Dark,
+                                cx,
+                            ))
+                            .child(self.theme_pill(
+                                p,
+                                "theme-light",
+                                self.t("Светлая"),
+                                ThemeSetting::Light,
+                                cx,
+                            ))
+                            .child(self.theme_pill(
+                                p,
+                                "theme-system",
+                                self.t("Система"),
+                                ThemeSetting::System,
+                                cx,
+                            )),
+                    ),
+            ),
         );
 
         page = page.child(
             self.settings_card(
                 p,
-                "Данные",
-                "Всё хранится локально. Никакой сети и телеметрии.",
+                self.t("Данные"),
+                self.t("Всё хранится локально. Никакой сети и телеметрии."),
             )
             .child(
                 div()
@@ -2034,7 +2173,7 @@ impl AppView {
                         div()
                             .text_size(px(11.))
                             .text_color(p.muted)
-                            .child("ПАПКА ДАННЫХ"),
+                            .child(self.t("ПАПКА ДАННЫХ")),
                     )
                     .child(
                         div()
@@ -2056,7 +2195,7 @@ impl AppView {
                             .secondary()
                             .compact()
                             .icon(IconName::FolderOpen)
-                            .label("Открыть папку")
+                            .label(self.t("Открыть папку"))
                             .on_click(|_, _, _| platform::open_folder()),
                     )
                     .child(
@@ -2064,7 +2203,7 @@ impl AppView {
                             .secondary()
                             .compact()
                             .icon(IconName::FileText)
-                            .label("Экспорт CSV")
+                            .label(self.t("Экспорт CSV"))
                             .on_click(cx.listener(|this, _, _, cx| this.export_csv(cx))),
                     )
                     .child(
@@ -2072,27 +2211,69 @@ impl AppView {
                             .ghost()
                             .compact()
                             .icon(IconName::RefreshCw)
-                            .label("Обновить")
+                            .label(self.t("Обновить"))
                             .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     ),
             ),
         );
 
-        page = page.child(
-            self.settings_card(p, "О программе", "Circadian")
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .text_size(px(11.))
-                        .text_color(p.muted)
-                        .child(format!("Версия {}", env!("CARGO_PKG_VERSION")))
-                        .child("Нативный Rust + GPUI, без WebView. Данные — SQLite в LocalAppData.")
-                        .child("GPUI и GPUI Kit — Apache-2.0. Шрифты Inter и JetBrains Mono — OFL.")
-                        .child("Трекер: выключение ПК = сон, включение = пробуждение. Спорные перерывы требуют одного клика."),
-                ),
-        );
+        let about = self
+            .settings_card(p, self.t("О программе"), "Circadian")
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .text_size(px(11.))
+                    .text_color(p.muted)
+                    .child(format!(
+                        "{} {}",
+                        self.t("Версия"),
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .child(self.t("Трекер сна для Windows. Без браслета, телефона и облака."))
+                    .child(self.t("Все данные остаются на этом компьютере.")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(p.border)
+                    .child(
+                        Button::new("about-github")
+                            .secondary()
+                            .compact()
+                            .label("GitHub")
+                            .on_click(|_, _, _| {
+                                platform::open_url("https://github.com/drawiks/circadian")
+                            }),
+                    )
+                    .child(
+                        Button::new("about-releases")
+                            .secondary()
+                            .compact()
+                            .label(self.t("Релизы"))
+                            .on_click(|_, _, _| {
+                                platform::open_url(
+                                    "https://github.com/drawiks/circadian/releases/latest",
+                                )
+                            }),
+                    )
+                    .child(
+                        Button::new("about-issues")
+                            .ghost()
+                            .compact()
+                            .label(self.t("Сообщить о проблеме"))
+                            .on_click(|_, _, _| {
+                                platform::open_url(
+                                    "https://github.com/drawiks/circadian/issues/new",
+                                )
+                            }),
+                    ),
+            );
+        page = page.child(about);
 
         page
     }
@@ -2249,13 +2430,15 @@ impl AppView {
         }
         match std::fs::write(&path, csv) {
             Ok(()) => {
-                self.notice = Some(format!("CSV сохранён: {}", path.display()));
+                self.notice = Some(format!("{}: {}", self.t("CSV сохранён"), path.display()));
                 let _ = std::process::Command::new("explorer")
                     .arg("/select,")
                     .arg(path)
                     .spawn();
             }
-            Err(error) => self.notice = Some(format!("Не удалось сохранить CSV: {error}")),
+            Err(error) => {
+                self.notice = Some(format!("{}: {error}", self.t("Не удалось сохранить CSV")))
+            }
         }
         cx.notify();
     }
@@ -2319,23 +2502,30 @@ impl Render for AppView {
                         .flex_1()
                         .h_full()
                         .min_w_0()
-                        .child(self.topbar(p))
+                        .child(self.topbar(p, cx))
                         .child(self.content(p, cx)),
                 ),
             )
     }
 }
 
-pub fn make(store: Rc<Store>, data_dir: PathBuf, page: Page) -> AppView {
-    AppView::new(store, data_dir, page).load()
-}
-
-fn attention_text(count: usize) -> String {
-    if count == 1 {
-        "1 ждёт подтверждения".to_string()
-    } else {
-        format!("{count} ждут подтверждения")
-    }
+pub fn make(
+    store: Rc<Store>,
+    data_dir: PathBuf,
+    page: Page,
+    system_lang: Lang,
+    lang_override: Option<Lang>,
+    initial_week_start: Option<NaiveDate>,
+) -> AppView {
+    AppView::new(
+        store,
+        data_dir,
+        page,
+        system_lang,
+        lang_override,
+        initial_week_start,
+    )
+    .load()
 }
 
 fn chip(p: Palette, text: &str, color: Hsla) -> Div {
@@ -2370,21 +2560,4 @@ fn session_color(p: Palette, session: &Session) -> Hsla {
         SessionKind::Away => p.muted,
         SessionKind::Unknown => p.muted,
     }
-}
-
-fn session_range(session: &Session) -> String {
-    let start = local_datetime(session.start_utc, session.start_offset_min);
-    let end = local_datetime(session.end_utc, session.end_offset_min);
-    let span = end.date().signed_duration_since(start.date()).num_days();
-    let suffix = if span > 0 {
-        format!(" +{span}д")
-    } else {
-        String::new()
-    };
-    format!(
-        "{} – {}{}",
-        start.format("%H:%M"),
-        end.format("%H:%M"),
-        suffix
-    )
 }

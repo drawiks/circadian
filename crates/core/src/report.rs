@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
+use chrono::{Duration, NaiveDate, NaiveDateTime};
 
+use crate::i18n::Lang;
 use crate::model::{Session, SessionKind};
 use crate::time::{
-    format_date_ru, format_duration, format_signed_duration, format_time_local, local_datetime,
-    minutes_of_day, weekday_ru,
+    format_duration, format_signed_duration, format_time_local, local_datetime, minutes_of_day,
+    weekday,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +66,7 @@ pub fn build_week_report(
     previous_sessions: &[Session],
     week_start_date: NaiveDate,
     target_minutes: i64,
+    lang: Lang,
 ) -> WeekReport {
     let week_end = week_start_date + Duration::days(7);
     let mut by_day: BTreeMap<NaiveDate, Vec<&Session>> = BTreeMap::new();
@@ -197,95 +199,165 @@ pub fn build_week_report(
     if session_count == 0 {
         facts.push(Fact {
             kind: FactKind::Data,
-            text: "За эту неделю пока нет подтверждённых сессий сна.".to_string(),
+            text: if lang.is_russian() {
+                "За эту неделю пока нет подтверждённых сессий сна.".to_string()
+            } else {
+                "No confirmed sleep sessions for this week yet.".to_string()
+            },
         });
     } else {
         facts.push(Fact {
             kind: FactKind::Summary,
-            text: format!(
-                "Средний сон за дни с данными — {}.",
-                format_duration(avg_per_day_min)
-            ),
+            text: if lang.is_russian() {
+                format!(
+                    "Средний сон за дни с данными — {}.",
+                    format_duration(avg_per_day_min, lang)
+                )
+            } else {
+                format!(
+                    "Average sleep on days with data — {}.",
+                    format_duration(avg_per_day_min, lang)
+                )
+            },
         });
         if let Some(previous) = previous_total_min {
             facts.push(Fact {
                 kind: FactKind::Trend,
-                text: format!(
-                    "За неделю сон изменился на {} относительно прошлой.",
-                    format_signed_duration(total_min - previous)
-                ),
+                text: if lang.is_russian() {
+                    format!(
+                        "За неделю сон изменился на {} относительно прошлой.",
+                        format_signed_duration(total_min - previous, lang)
+                    )
+                } else {
+                    format!(
+                        "Sleep changed by {} compared with last week.",
+                        format_signed_duration(total_min - previous, lang)
+                    )
+                },
             });
         }
         if debt_min > 0 {
             facts.push(Fact {
                 kind: FactKind::Debt,
-                text: format!(
-                    "Недосып относительно цели — {} за {} дн. с данными.",
-                    format_duration(debt_min),
-                    days_with_data
-                ),
+                text: if lang.is_russian() {
+                    format!(
+                        "Недосып относительно цели — {} за {} дн. с данными.",
+                        format_duration(debt_min, lang),
+                        days_with_data
+                    )
+                } else {
+                    format!(
+                        "Sleep debt — {} across {} days with data.",
+                        format_duration(debt_min, lang),
+                        days_with_data
+                    )
+                },
             });
         } else if debt_min < 0 {
             facts.push(Fact {
                 kind: FactKind::Debt,
-                text: format!("Сон выше цели на {}.", format_duration(-debt_min)),
+                text: if lang.is_russian() {
+                    format!("Сон выше цели на {}.", format_duration(-debt_min, lang))
+                } else {
+                    format!("Sleep above goal by {}.", format_duration(-debt_min, lang))
+                },
             });
         }
         if let Some((date, minutes)) = longest {
             facts.push(Fact {
                 kind: FactKind::Longest,
-                text: format!(
-                    "Самый длинный основной сон — {}, {}.",
-                    weekday_ru(date),
-                    format_duration(minutes)
-                ),
+                text: if lang.is_russian() {
+                    format!(
+                        "Самый длинный основной сон — {}, {}.",
+                        weekday(date, lang),
+                        format_duration(minutes, lang)
+                    )
+                } else {
+                    format!(
+                        "Longest main sleep — {}, {}.",
+                        weekday(date, lang),
+                        format_duration(minutes, lang)
+                    )
+                },
             });
         }
         if let Some((date, minutes)) = shortest {
             if longest.map(|(_, value)| value) != Some(minutes) {
                 facts.push(Fact {
                     kind: FactKind::Shortest,
-                    text: format!(
-                        "Самый короткий основной сон — {}, {}.",
-                        weekday_ru(date),
-                        format_duration(minutes)
-                    ),
+                    text: if lang.is_russian() {
+                        format!(
+                            "Самый короткий основной сон — {}, {}.",
+                            weekday(date, lang),
+                            format_duration(minutes, lang)
+                        )
+                    } else {
+                        format!(
+                            "Shortest main sleep — {}, {}.",
+                            weekday(date, lang),
+                            format_duration(minutes, lang)
+                        )
+                    },
                 });
             }
         }
         if let Some(sd) = regularity_sd_min {
             facts.push(Fact {
                 kind: FactKind::Regularity,
-                text: format!(
-                    "Время отбоя различалось примерно на ±{}.",
-                    format_duration(sd)
-                ),
+                text: if lang.is_russian() {
+                    format!(
+                        "Время отбоя различалось примерно на ±{}.",
+                        format_duration(sd, lang)
+                    )
+                } else {
+                    format!("Bedtimes varied by about ±{}.", format_duration(sd, lang))
+                },
             });
         }
         if let Some((date, start)) = latest_start {
             facts.push(Fact {
                 kind: FactKind::Time,
-                text: format!(
-                    "Самый поздний отбой — {}, {}.",
-                    weekday_ru(date),
-                    format_time_local(start)
-                ),
+                text: if lang.is_russian() {
+                    format!(
+                        "Самый поздний отбой — {}, {}.",
+                        weekday(date, lang),
+                        format_time_local(start)
+                    )
+                } else {
+                    format!(
+                        "Latest bedtime — {}, {}.",
+                        weekday(date, lang),
+                        format_time_local(start)
+                    )
+                },
             });
         }
         if nap_count > 0 {
             facts.push(Fact {
                 kind: FactKind::Nap,
-                text: format!(
-                    "Дневных снов: {}, суммарно {}.",
-                    nap_count,
-                    format_duration(nap_total_min)
-                ),
+                text: if lang.is_russian() {
+                    format!(
+                        "Дневных снов: {}, суммарно {}.",
+                        nap_count,
+                        format_duration(nap_total_min, lang)
+                    )
+                } else {
+                    format!(
+                        "Naps: {}, {} total.",
+                        nap_count,
+                        format_duration(nap_total_min, lang)
+                    )
+                },
             });
         }
         if days_with_data < 7 {
             facts.push(Fact {
                 kind: FactKind::Data,
-                text: format!("Данные есть за {} из 7 дней.", days_with_data),
+                text: if lang.is_russian() {
+                    format!("Данные есть за {} из 7 дней.", days_with_data)
+                } else {
+                    format!("Data available for {} of 7 days.", days_with_data)
+                },
             });
         }
         let short_days = days
@@ -295,7 +367,11 @@ pub fn build_week_report(
         if short_days > 0 {
             facts.push(Fact {
                 kind: FactKind::Shortest,
-                text: format!("Дней сном короче 6 часов: {}.", short_days),
+                text: if lang.is_russian() {
+                    format!("Дней сном короче 6 часов: {}.", short_days)
+                } else {
+                    format!("Days with less than 6 hours of sleep: {}.", short_days)
+                },
             });
         }
     }
@@ -344,26 +420,19 @@ fn circular_sd_minutes(starts: &[NaiveDateTime]) -> Option<i64> {
     Some(minutes.min(12 * 60))
 }
 
-pub fn week_title(week_start_date: NaiveDate) -> String {
+pub fn week_title(week_start_date: NaiveDate, lang: Lang) -> String {
     let end = week_start_date + Duration::days(6);
     format!(
         "{} — {}",
-        format_date_ru(week_start_date),
-        format_date_ru(end)
+        crate::time::format_date(week_start_date, lang),
+        crate::time::format_date(end, lang)
     )
-}
-
-pub fn weekday_short(date: NaiveDate) -> &'static str {
-    weekday_ru(date)
-}
-
-pub fn month_day(date: NaiveDate) -> String {
-    format!("{} {}", date.day(), crate::time::month_ru(date.month()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Lang;
     use crate::model::PowerSource;
     use chrono::{TimeZone, Utc};
 
@@ -396,7 +465,7 @@ mod tests {
             session((11, 18, 2, 0), (11, 18, 5, 0), true),
             session((11, 19, 1, 0), (11, 19, 9, 0), false),
         ];
-        let report = build_week_report(&sessions, &[], week, 480);
+        let report = build_week_report(&sessions, &[], week, 480, Lang::Russian);
         assert_eq!(report.total_min, 8 * 60 + 3 * 60);
         assert_eq!(report.days_with_data, 2);
         assert_eq!(
@@ -415,7 +484,7 @@ mod tests {
             session((11, 16, 23, 0), (11, 17, 7, 0), true),
             session((11, 17, 23, 0), (11, 18, 7, 0), true),
         ];
-        let report = build_week_report(&sessions, &[], week, 480);
+        let report = build_week_report(&sessions, &[], week, 480, Lang::Russian);
         assert_eq!(report.regularity_sd_min, Some(0));
     }
 
@@ -424,7 +493,7 @@ mod tests {
         let week = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
         let previous = vec![session((11, 10, 23, 0), (11, 11, 6, 0), true)];
         let current = vec![session((11, 16, 23, 0), (11, 17, 8, 0), true)];
-        let report = build_week_report(&current, &previous, week, 480);
+        let report = build_week_report(&current, &previous, week, 480, Lang::Russian);
         assert_eq!(report.previous_total_min, Some(7 * 60));
         assert_eq!(report.total_min, 9 * 60);
     }

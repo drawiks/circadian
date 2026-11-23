@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use chrono::{DateTime, Utc};
+use circadian_core::i18n::Lang;
 use circadian_core::reconcile::{reconcile_start, StartContext};
 use circadian_core::time::{format_clock, format_duration, local_offset_minutes, now_utc};
 use circadian_core::{PersistedState, PowerSource, SessionDraft, Settings, Store};
@@ -156,6 +157,8 @@ struct App {
     store: Store,
     settings: Settings,
     state: PersistedState,
+    lang: Lang,
+    system_lang: Lang,
     hwnd: HWND,
     tray_icon: windows::Win32::UI::WindowsAndMessaging::HICON,
     tray_added: bool,
@@ -196,11 +199,15 @@ impl App {
         store.insert_event(now, "daemon_start", "start")?;
         apply_autostart(settings.autostart);
 
+        let system_lang = system_language();
+        let lang = Lang::resolve(settings.language, system_lang);
         let tray_icon = load_icon();
         let app = Self {
             store,
             settings,
             state,
+            lang,
+            system_lang,
             hwnd: HWND::default(),
             tray_icon,
             tray_added: false,
@@ -209,6 +216,17 @@ impl App {
         };
         app.log("start", "daemon started");
         Ok(app)
+    }
+
+    fn t(&self, ru: &'static str) -> &'static str {
+        self.lang.t(ru)
+    }
+
+    fn reload_settings(&mut self) {
+        if let Ok(settings) = self.store.load_settings() {
+            self.lang = Lang::resolve(settings.language, self.system_lang);
+            self.settings = settings;
+        }
     }
 
     fn log(&self, kind: &str, detail: &str) {
@@ -237,11 +255,9 @@ impl App {
     }
 
     fn tick(&mut self) {
-        if let Ok(settings) = self.store.load_settings() {
-            if settings.autostart != self.settings.autostart {
-                apply_autostart(settings.autostart);
-            }
-            self.settings = settings;
+        self.reload_settings();
+        if self.settings.autostart {
+            apply_autostart(true);
         }
         let now = now_utc();
         self.state.last_seen_utc = Some(now);
@@ -426,11 +442,17 @@ impl App {
     fn tooltip_text(&self) -> String {
         let now = now_utc();
         if self.is_paused(now) {
-            return "Circadian · пауза".to_string();
+            return self.t("Circadian · пауза").to_string();
         }
         if let Some(start) = self.state.manual_sleep_start_utc {
+            if self.lang.is_russian() {
+                return format!(
+                    "Circadian · сон вручную с {}",
+                    format_clock(start, local_offset_minutes(start))
+                );
+            }
             return format!(
-                "Circadian · сон вручную с {}",
+                "Circadian · manual sleep since {}",
                 format_clock(start, local_offset_minutes(start))
             );
         }
@@ -439,7 +461,14 @@ impl App {
             .awake_since_utc
             .map(|start| (now - start).num_minutes().max(0))
             .unwrap_or(0);
-        format!("Circadian · бодрствуешь {}", format_duration(awake))
+        if self.lang.is_russian() {
+            format!(
+                "Circadian · бодрствуешь {}",
+                format_duration(awake, self.lang)
+            )
+        } else {
+            format!("Circadian · awake {}", format_duration(awake, self.lang))
+        }
     }
 
     fn update_tooltip(&self) {
@@ -488,22 +517,23 @@ impl App {
     }
 
     fn show_menu(&mut self) {
+        self.reload_settings();
         let menu = match unsafe { CreatePopupMenu() } {
             Ok(menu) => menu,
             Err(_) => return,
         };
         let status = if self.state.manual_sleep_start_utc.is_some() {
-            "Сон вручную: идёт"
+            self.t("Сон вручную: идёт")
         } else {
-            "Открыть окно"
+            self.t("Открыть окно")
         };
         append(menu, MF_STRING | MF_GRAYED, 0, status);
         append(menu, MF_SEPARATOR, 0, "");
-        append(menu, MF_STRING, ID_OPEN, "Открыть Circadian");
+        append(menu, MF_STRING, ID_OPEN, self.t("Открыть Circadian"));
         let sleep_label = if self.state.manual_sleep_start_utc.is_some() {
-            "Я проснулся"
+            self.t("Я проснулся")
         } else {
-            "Я ложусь спать"
+            self.t("Я ложусь спать")
         };
         append(menu, MF_STRING, ID_TOGGLE_SLEEP, sleep_label);
         let pause_label = if self
@@ -512,9 +542,9 @@ impl App {
             .map(|until| until > now_utc())
             .unwrap_or(false)
         {
-            "Снять паузу"
+            self.t("Снять паузу")
         } else {
-            "Пауза 4 часа"
+            self.t("Пауза 4 часа")
         };
         append(menu, MF_STRING, ID_PAUSE, pause_label);
         append(menu, MF_SEPARATOR, 0, "");
@@ -523,10 +553,10 @@ impl App {
         } else {
             MF_STRING
         };
-        append(menu, autostart_flags, ID_AUTOSTART, "Автозапуск");
-        append(menu, MF_STRING, ID_OPEN_SETTINGS, "Настройки…");
+        append(menu, autostart_flags, ID_AUTOSTART, self.t("Автозапуск"));
+        append(menu, MF_STRING, ID_OPEN_SETTINGS, self.t("Настройки…"));
         append(menu, MF_SEPARATOR, 0, "");
-        append(menu, MF_STRING, ID_EXIT, "Выход");
+        append(menu, MF_STRING, ID_EXIT, self.t("Выход"));
 
         let mut point = POINT::default();
         let _ = unsafe { GetCursorPos(&mut point) };
@@ -582,7 +612,7 @@ impl App {
                 return;
             }
         }
-        show_error("Не найден circadian.exe рядом с демоном.");
+        show_error(self.t("Не найден circadian.exe рядом с демоном."));
     }
 }
 
@@ -679,6 +709,23 @@ fn data_dir() -> PathBuf {
         PathBuf::from(value).join("Circadian")
     } else {
         PathBuf::from("Circadian")
+    }
+}
+
+fn system_language() -> Lang {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Globalization::GetUserDefaultUILanguage;
+        let id = unsafe { GetUserDefaultUILanguage() };
+        if id & 0x3ff == 0x19 {
+            Lang::Russian
+        } else {
+            Lang::English
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Lang::English
     }
 }
 

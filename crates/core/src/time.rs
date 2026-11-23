@@ -1,8 +1,14 @@
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Utc};
 
-const WEEKDAYS: [&str; 7] = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
-const MONTHS: [&str; 12] = [
+use crate::i18n::Lang;
+
+const WEEKDAYS_RU: [&str; 7] = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
+const WEEKDAYS_EN: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTHS_RU: [&str; 12] = [
     "янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек",
+];
+const MONTHS_EN: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
 pub fn now_utc() -> DateTime<Utc> {
@@ -23,12 +29,22 @@ pub fn local_date(at: DateTime<Utc>, offset_min: i32) -> NaiveDate {
     local_datetime(at, offset_min).date()
 }
 
-pub fn weekday_ru(date: NaiveDate) -> &'static str {
-    WEEKDAYS[date.weekday().num_days_from_monday() as usize]
+pub fn weekday(date: NaiveDate, lang: Lang) -> &'static str {
+    let index = date.weekday().num_days_from_monday() as usize;
+    if lang.is_russian() {
+        WEEKDAYS_RU[index]
+    } else {
+        WEEKDAYS_EN[index]
+    }
 }
 
-pub fn month_ru(month: u32) -> &'static str {
-    MONTHS[(month.saturating_sub(1) as usize).min(11)]
+pub fn month(month: u32, lang: Lang) -> &'static str {
+    let index = (month.saturating_sub(1) as usize).min(11);
+    if lang.is_russian() {
+        MONTHS_RU[index]
+    } else {
+        MONTHS_EN[index]
+    }
 }
 
 pub fn format_clock(at: DateTime<Utc>, offset_min: i32) -> String {
@@ -39,16 +55,16 @@ pub fn format_time_local(value: NaiveDateTime) -> String {
     value.format("%H:%M").to_string()
 }
 
-pub fn format_date_short(date: NaiveDate) -> String {
-    format!("{} {}", date.day(), month_ru(date.month()))
+pub fn format_date_short(date: NaiveDate, lang: Lang) -> String {
+    format!("{} {}", date.day(), month(date.month(), lang))
 }
 
-pub fn format_date_ru(date: NaiveDate) -> String {
+pub fn format_date(date: NaiveDate, lang: Lang) -> String {
     format!(
         "{}, {} {}",
-        weekday_ru(date),
+        weekday(date, lang),
         date.day(),
-        month_ru(date.month())
+        month(date.month(), lang)
     )
 }
 
@@ -56,35 +72,43 @@ pub fn format_date_full(date: NaiveDate) -> String {
     format!("{:02}.{:02}.{}", date.day(), date.month(), date.year())
 }
 
-pub fn format_datetime_ru(value: NaiveDateTime) -> String {
+pub fn format_datetime(value: NaiveDateTime, lang: Lang) -> String {
     format!(
         "{}, {} {} · {}",
-        weekday_ru(value.date()),
+        weekday(value.date(), lang),
         value.date().day(),
-        month_ru(value.date().month()),
+        month(value.date().month(), lang),
         value.format("%H:%M")
     )
 }
 
-pub fn format_duration(minutes: i64) -> String {
+pub fn format_duration(minutes: i64, lang: Lang) -> String {
     let minutes = minutes.max(0);
     let hours = minutes / 60;
     let rest = minutes % 60;
-    if hours == 0 {
-        format!("{rest} мин")
+    if lang.is_russian() {
+        if hours == 0 {
+            format!("{rest} мин")
+        } else if rest == 0 {
+            format!("{hours} ч")
+        } else {
+            format!("{hours} ч {rest:02} мин")
+        }
+    } else if hours == 0 {
+        format!("{rest}m")
     } else if rest == 0 {
-        format!("{hours} ч")
+        format!("{hours}h")
     } else {
-        format!("{hours} ч {rest:02} мин")
+        format!("{hours}h {rest:02}m")
     }
 }
 
-pub fn format_signed_duration(minutes: i64) -> String {
+pub fn format_signed_duration(minutes: i64, lang: Lang) -> String {
     if minutes == 0 {
-        return "0 мин".to_string();
+        return if lang.is_russian() { "0 мин" } else { "0m" }.to_string();
     }
     let sign = if minutes > 0 { "+" } else { "−" };
-    format!("{sign}{}", format_duration(minutes.abs()))
+    format!("{sign}{}", format_duration(minutes.abs(), lang))
 }
 
 pub fn week_start(date: NaiveDate) -> NaiveDate {
@@ -106,12 +130,14 @@ mod tests {
 
     #[test]
     fn formats_durations() {
-        assert_eq!(format_duration(0), "0 мин");
-        assert_eq!(format_duration(45), "45 мин");
-        assert_eq!(format_duration(120), "2 ч");
-        assert_eq!(format_duration(438), "7 ч 18 мин");
-        assert_eq!(format_signed_duration(-80), "−1 ч 20 мин");
-        assert_eq!(format_signed_duration(25), "+25 мин");
+        assert_eq!(format_duration(0, Lang::Russian), "0 мин");
+        assert_eq!(format_duration(45, Lang::Russian), "45 мин");
+        assert_eq!(format_duration(120, Lang::Russian), "2 ч");
+        assert_eq!(format_duration(438, Lang::Russian), "7 ч 18 мин");
+        assert_eq!(format_signed_duration(-80, Lang::Russian), "−1 ч 20 мин");
+        assert_eq!(format_signed_duration(25, Lang::Russian), "+25 мин");
+        assert_eq!(format_duration(438, Lang::English), "7h 18m");
+        assert_eq!(format_signed_duration(-80, Lang::English), "−1h 20m");
     }
 
     #[test]
@@ -133,5 +159,12 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 11, 23).unwrap()
         );
         assert_eq!(format_clock(at, 120), "01:30");
+    }
+
+    #[test]
+    fn formats_english_dates() {
+        let date = NaiveDate::from_ymd_opt(2026, 11, 22).unwrap();
+        assert_eq!(format_date(date, Lang::English), "Sun, 22 Nov");
+        assert_eq!(format_date(date, Lang::Russian), "вс, 22 ноя");
     }
 }

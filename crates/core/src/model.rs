@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::Language;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
@@ -169,6 +171,8 @@ pub struct Settings {
     pub suspend_counts_as_sleep: bool,
     pub autostart: bool,
     pub theme: Theme,
+    #[serde(default)]
+    pub language: Language,
 }
 
 impl Default for Settings {
@@ -181,6 +185,7 @@ impl Default for Settings {
             suspend_counts_as_sleep: true,
             autostart: true,
             theme: Theme::Dark,
+            language: Language::System,
         }
     }
 }

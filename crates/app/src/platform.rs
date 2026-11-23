@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use circadian_core::i18n::Lang;
+
 pub fn data_dir() -> PathBuf {
     if let Some(value) = std::env::var_os("LOCALAPPDATA") {
         PathBuf::from(value).join("Circadian")
@@ -13,6 +15,39 @@ pub fn data_dir() -> PathBuf {
 
 pub fn db_path() -> PathBuf {
     data_dir().join("circadian.db")
+}
+
+pub fn system_language() -> Lang {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Globalization::GetUserDefaultUILanguage;
+        let id = unsafe { GetUserDefaultUILanguage() };
+        if id & 0x3ff == 0x19 {
+            Lang::Russian
+        } else {
+            Lang::English
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let value = std::env::var("LANG").unwrap_or_default().to_lowercase();
+        if value.starts_with("ru") {
+            Lang::Russian
+        } else {
+            Lang::English
+        }
+    }
+}
+
+pub fn open_url(url: &str) {
+    #[cfg(windows)]
+    {
+        let _ = Command::new("explorer").arg(url).spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("xdg-open").arg(url).spawn();
+    }
 }
 
 pub fn daemon_path() -> Option<PathBuf> {
