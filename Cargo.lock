@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "circadian-app"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "circadian-core",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "circadian-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "circadian-daemon"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "circadian-core",
